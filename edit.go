@@ -292,6 +292,12 @@ func (z *Zone) placement(p Placement) (Placement, error) {
 // under the same parent name (siblings); else after the last record of
 // the same type; else at the end. The owner is in client form; one outside
 // the zone yields the type anchor alone.
+//
+// An owner whose first label starts with "_" is an attribute leaf (RFC 8552:
+// _acme-challenge, _dmarc, _25._tcp), protocol metadata rather than a host.
+// It groups only with its own label family and otherwise goes to the end:
+// the type anchor would put it after an unrelated record that happens to
+// share the type, such as the last TXT of a commented section.
 func (z *Zone) DefaultPlacement(owner string, rtype uint16) Placement {
 	rel, err := z.editOwner(owner)
 	if err != nil {
@@ -307,6 +313,9 @@ func (z *Zone) DefaultPlacement(owner string, rtype uint16) Placement {
 				break
 			}
 		}
+	}
+	if strings.HasPrefix(rel, "_") {
+		return p
 	}
 	return append(p, Anchor{Type: rtype})
 }

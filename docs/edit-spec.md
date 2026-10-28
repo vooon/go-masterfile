@@ -178,6 +178,14 @@ first label is the same (`{Prefix: "_acme-challenge."}` for
 `{Under: "zot"}`); else the last record of the same type; else the end.
 `Insert` (3.6) uses it when given no placement.
 
+The type anchor is for hosts, where "the other A records" is a meaningful
+neighbourhood. An owner whose first label starts with `_` is an attribute
+leaf (RFC 8552: `_acme-challenge`, `_dmarc`, `_25._tcp`) and gets no type
+anchor: TXT, SRV and TLSA records of unrelated services share a type without
+belonging together, and the first challenge record of a zone must not be
+filed into whatever commented section holds the last TXT. It goes to the end
+unless its label family or parent is present.
+
 ### 2.7 Carried comments
 
 When an operation drops a Record entry while inserting others in its place,

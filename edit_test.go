@@ -438,7 +438,11 @@ func TestPlacement(t *testing.T) {
 	}{
 		{"@", Placement{{Owner: "@"}, {Type: dns.TypeA}}},
 		{"www", Placement{{Owner: "www"}, {Under: "www"}, {Type: dns.TypeA}}},
-		{"_acme-challenge.zot.at.example.com.", Placement{{Owner: "_acme-challenge.zot"}, {Prefix: "_acme-challenge."}, {Under: "zot"}, {Type: dns.TypeA}}},
+		// Attribute leaves (RFC 8552) never fall back to the type anchor.
+		{"_acme-challenge.zot.at.example.com.", Placement{{Owner: "_acme-challenge.zot"}, {Prefix: "_acme-challenge."}, {Under: "zot"}}},
+		{"_acme-challenge", Placement{{Owner: "_acme-challenge"}, {Under: "_acme-challenge"}}},
+		{"_dmarc", Placement{{Owner: "_dmarc"}, {Under: "_dmarc"}}},
+		{"host._tcp", Placement{{Owner: "host._tcp"}, {Prefix: "host."}, {Under: "_tcp"}, {Type: dns.TypeA}}},
 		{`a\.b.c`, Placement{{Owner: `a\.b.c`}, {Prefix: `a\.b.`}, {Under: "c"}, {Type: dns.TypeA}}},
 		{"example.net.", Placement{{Type: dns.TypeA}}},
 	} {
@@ -447,6 +451,39 @@ func TestPlacement(t *testing.T) {
 	assert.False(t, underRel(`a\.zot`, "zot"), "underRel")
 	assert.True(t, underRel("a.zot", "zot"), "underRel")
 	assert.False(t, underRel("azot", "zot"), "underRel")
+}
+
+func TestInsert_AttributeLeafGoesToEnd(t *testing.T) {
+	// The zone has TXT records of its own; a first _acme-challenge must not
+	// be filed after the last of them (the spec's "same type" fallback is
+	// for hosts), but at the end, where a human adds an unrelated name.
+	z, err := Parse([]byte(`$ORIGIN example.org.
+@ IN SOA ns1 hostmaster 1 1h 10m 1w 1h
+; mail
+@ IN MX 10 mx
+@ IN TXT "v=spf1 mx -all"
+_dmarc IN TXT "v=DMARC1; p=reject"
+; hosts
+www IN A 192.0.2.1
+mx IN A 192.0.2.25
+`), "")
+	require.NoError(t, err)
+
+	_, err = z.Apply(Insert{Owner: "_acme-challenge", Records: []RR{{Type: dns.TypeTXT, Content: "tok"}}})
+	require.NoError(t, err)
+	last := z.Entries[len(z.Entries)-1]
+	assert.Equal(t, "_acme-challenge", last.Owner(), "challenge record is last")
+
+	// A challenge for a host files under that host (its parent), not with
+	// the other TXTs and not at the end.
+	res, err := z.Apply(Insert{Owner: "_acme-challenge.www", Records: []RR{{Type: dns.TypeTXT, Content: "tok2"}}})
+	require.NoError(t, err)
+	assert.Equal(t, "www", z.Entries[res[0].Index-1].Owner(), "right after its host")
+
+	// A host still files with its kind.
+	res, err = z.Apply(Insert{Owner: "ftp", Records: []RR{{Type: dns.TypeA, Content: "192.0.2.2"}}})
+	require.NoError(t, err)
+	assert.Equal(t, "mx", z.Entries[res[0].Index-1].Owner(), "after the last A record")
 }
 
 func TestEntryConstructors(t *testing.T) {

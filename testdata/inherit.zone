@@ -1,0 +1,4 @@
+$ORIGIN x.example.
+a IN A 192.0.2.1
+
+ IN AAAA 2001:db8::1

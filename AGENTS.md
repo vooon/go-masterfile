@@ -23,9 +23,10 @@ This module is a new work written from the spec and the RFCs it cites.
 - No code generation from other zone libraries.
 
 ## Dependencies
-- The only third-party dependency is `github.com/miekg/dns` (type/class name
-  tables, and the reference parser in `Verify`). Do not add any other module,
-  not even for tests; this library must stay cheap for zoneomatic to import.
+- The only third-party dependencies are `github.com/miekg/dns` (type/class
+  name tables, and the reference parser in `Verify`) and `golang.org/x/net`
+  (IDNA, already required by miekg/dns). Do not add any other module, not
+  even for tests; this library must stay cheap for zoneomatic to import.
 - No command in this repo. The `mfmt` formatter (spec section 6.9) lives in
   zoneomatic as a thin wrapper over `Reformat`; this module only has to make
   `Reformat` sufficient for it.

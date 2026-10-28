@@ -68,6 +68,23 @@ and where behaviour was pinned down.
 - `NameEqual` is literal apart from ASCII case: `www` and `www.` differ.
   Normalisation is the caller's job via `Fqdn`/`Absolute`.
 
+## Internationalised names
+
+- `ToASCII` and `ToUnicode` (`idna.go`) convert between U-labels and
+  A-labels with `golang.org/x/net/idna`, which was already in the module
+  graph through miekg/dns, so no new dependency is added.
+- Conversion is **per label**, splitting on unescaped dots, and only labels
+  that contain bytes above 0x7F (`ToASCII`) or start with `xn--`
+  (`ToUnicode`) are touched. Everything else is copied byte for byte, so
+  `@`, `*`, `_acme-challenge`, ASCII upper case and escapes survive. A
+  whole-name IDNA profile would reject or rewrite those.
+- The profile is the lenient lookup mapping with the LDH label check off,
+  not the strict registration profile: a zone file editor must accept what
+  people already have in their zones.
+- Nothing in the package converts implicitly. Zone files hold A-labels and
+  `NameEqual`, `Relative` and `NewRecord` stay byte-oriented as the spec
+  requires; callers convert at their input and display boundaries.
+
 ## Equality
 
 - `Entry.Equal` compares decoded values, so `"a b"` and `a\ b` in a TXT are

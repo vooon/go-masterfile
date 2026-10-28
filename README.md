@@ -20,6 +20,9 @@ hand and that a name server (BIND, Knot, CoreDNS) then loads:
 - **Verify** proves with an independent parser (miekg/dns) that the
   formatted text holds exactly the intended records and comments before it
   replaces the original.
+- **ToASCII** and **ToUnicode** convert internationalised names between
+  their Unicode and `xn--` forms, label by label, at your input and display
+  boundaries.
 
 ```go
 f, err := masterfile.Parse(data)

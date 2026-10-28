@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.2](https://github.com/vooon/go-masterfile/compare/v0.2.1...v0.2.2) (2026-10-28)
+
+
+### Bug Fixes
+
+* no type anchor in DefaultPlacement for attribute leaves ([647c08e](https://github.com/vooon/go-masterfile/commit/647c08e390a3aab10309bdfd63c844043e9c0eda))
+* no type anchor in DefaultPlacement for attribute leaves ([9e242ed](https://github.com/vooon/go-masterfile/commit/9e242ed53d2f684725a6b59c6d1e99e728abadae))
+
 ## [0.2.1](https://github.com/vooon/go-masterfile/compare/v0.2.0...v0.2.1) (2026-10-28)
 
 

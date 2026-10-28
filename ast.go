@@ -4,6 +4,7 @@ package masterfile
 
 import (
 	"slices"
+	"strconv"
 	"strings"
 )
 
@@ -30,7 +31,7 @@ func (k Kind) String() string {
 	case Record:
 		return "record"
 	}
-	return "kind(" + itoa(int(k)) + ")"
+	return "kind(" + strconv.Itoa(int(k)) + ")"
 }
 
 // Field is one rdata field or directive argument.
@@ -168,11 +169,30 @@ func (e Entry) RawValues() []string {
 // SPF the concatenation of the decoded strings, for every other type the
 // decoded fields joined by one space.
 func (e Entry) Content() string {
+	fs := e.allFields()
+	switch len(fs) {
+	case 0:
+		return ""
+	case 1:
+		return fs[0].Value
+	}
 	sep := " "
 	if e.isText() {
 		sep = ""
 	}
-	return strings.Join(e.Values(), sep)
+	n := len(sep) * (len(fs) - 1)
+	for _, f := range fs {
+		n += len(f.Value)
+	}
+	var b strings.Builder
+	b.Grow(n)
+	for i, f := range fs {
+		if i > 0 {
+			b.WriteString(sep)
+		}
+		b.WriteString(f.Value)
+	}
+	return b.String()
 }
 
 // isText reports whether the record's rdata is character-strings (TXT, SPF).
@@ -180,11 +200,13 @@ func (e Entry) isText() bool { return e.typ == "TXT" || e.typ == "SPF" }
 
 // WithComments returns a copy of the entry with the comments appended to its
 // last line as one comment joined by single spaces. Comments without a
-// leading ";" get one. Empty comments are ignored.
+// leading ";" get one. Empty comments are ignored. Line terminators and NUL
+// inside a comment become spaces, so a comment can never end the line and
+// start another entry (see [NewComment] for the strict form).
 func (e Entry) WithComments(comments ...string) Entry {
 	var parts []string
 	for _, c := range comments {
-		c = strings.TrimSpace(c)
+		c = strings.TrimSpace(oneLine(c))
 		if c == "" {
 			continue
 		}
@@ -210,32 +232,24 @@ func (e Entry) WithComments(comments ...string) Entry {
 	return e
 }
 
+// oneLine replaces every line terminator and NUL in s with a space.
+func oneLine(s string) string {
+	if !strings.ContainsAny(s, "\r\n\x00") {
+		return s
+	}
+	b := []byte(s)
+	for i, c := range b {
+		if c == '\r' || c == '\n' || c == 0 {
+			b[i] = ' '
+		}
+	}
+	return string(b)
+}
+
 // WithOwner returns a copy of a Record entry with its owner replaced; an
 // empty name clears the owner so it is inherited. It is the caller's job
 // to pass a single owner item (see [NewRecord]).
 func (e Entry) WithOwner(name string) Entry {
 	e.owner = name
 	return e
-}
-
-func itoa(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	neg := n < 0
-	if neg {
-		n = -n
-	}
-	var buf [20]byte
-	i := len(buf)
-	for n > 0 {
-		i--
-		buf[i] = byte('0' + n%10)
-		n /= 10
-	}
-	if neg {
-		i--
-		buf[i] = '-'
-	}
-	return string(buf[i:])
 }

@@ -101,7 +101,7 @@ var ErrInvalidEntry = errors.New("invalid entry")
 // quoted string, so it can never add a line, a comment or a second entry;
 // a $TTL argument must be a valid TTL. Errors wrap [ErrInvalidEntry].
 func NewDirective(name string, args ...string) (Entry, error) {
-	e := Entry{kind: Directive, name: strings.ToUpper(name)}
+	e := Entry{kind: Directive, name: upperASCII(name)}
 	switch e.name {
 	case "$ORIGIN", "$TTL", "$INCLUDE", "$GENERATE":
 	default:

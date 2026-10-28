@@ -45,7 +45,7 @@ func ToASCII(name string) (string, error) {
 // decode, the whole name is returned unchanged.
 func ToUnicode(name string) string {
 	u, err := mapLabels(name, func(label string) (string, error) {
-		if len(label) < 4 || !strings.EqualFold(label[:4], "xn--") {
+		if len(label) < 4 || !NameEqual(label[:4], "xn--") {
 			return label, nil
 		}
 		return idnaProfile.ToUnicode(label)

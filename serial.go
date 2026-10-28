@@ -30,10 +30,8 @@ const (
 // is a date serial when it lies in 1990010100..2099123199 and its first
 // eight digits form a valid calendar date; any other number is a Unix time.
 func classifySerial(s string) (serialKind, uint32) {
-	if !allDigits(s) {
-		return serialOther, 0
-	}
-	n, err := strconv.ParseUint(s, 10, 32)
+	n, err := strconv.ParseUint(s, 10, 32) // digits only: no sign, no underscore
+
 	if err != nil {
 		return serialOther, 0
 	}

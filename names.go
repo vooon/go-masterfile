@@ -53,6 +53,30 @@ func lowerASCII(c byte) byte {
 	return c
 }
 
+// upperASCII upper-cases the ASCII letters of s and leaves every other byte
+// as it is (RFC 4343: no Unicode folding, so "ı" never becomes "I" and raw
+// bytes above 0x7F survive). It returns s itself when nothing changes.
+func upperASCII(s string) string { return mapASCII(s, 'a', 'z', 'A'-'a') }
+
+// foldASCII lower-cases the ASCII letters of s, see [upperASCII].
+func foldASCII(s string) string { return mapASCII(s, 'A', 'Z', 'a'-'A') }
+
+func mapASCII(s string, lo, hi byte, delta int) string {
+	for i := range len(s) {
+		if s[i] < lo || s[i] > hi {
+			continue
+		}
+		b := []byte(s)
+		for j := i; j < len(b); j++ {
+			if b[j] >= lo && b[j] <= hi {
+				b[j] = byte(int(b[j]) + delta)
+			}
+		}
+		return string(b)
+	}
+	return s
+}
+
 // Relative returns the part of the absolute name under the absolute origin:
 // the origin itself gives "@", "www.example.org." under "example.org." gives
 // "www". A name that is "@", not absolute, or not under the origin is

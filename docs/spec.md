@@ -650,9 +650,10 @@ the date-serial comment form, which this specification changes (section
 6.6; zoneomatic's goldens use Unix time serials, so none should change).
 
 `WithComments(comments)` appends comments to an entry's last line as one
-joined comment; `SetDomain(name)` replaces or clears the owner. Both are
-needed by zoneomatic's update logic and belong in the new module as entry
-methods (`WithComments`, `WithOwner`).
+joined comment, with line terminators and NUL in the texts replaced by
+spaces so the entry stays one entry; `SetDomain(name)` replaces or clears
+the owner. Both are needed by zoneomatic's update logic and belong in the
+new module as entry methods (`WithComments`, `WithOwner`).
 
 ## 11. Open decisions for the implementer
 

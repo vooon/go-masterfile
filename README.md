@@ -26,6 +26,22 @@ hand and that a name server (BIND, Knot, CoreDNS) then loads:
 - **InZone**, **LongestZone**, **ReverseName**, **ReverseAddr**,
   **IsReverseZone** and **ReversePrefix** route names to zones and build or
   parse `in-addr.arpa` and `ip6.arpa` names and prefixes.
+- **Zone** is an editing session: `Open`, then `Replace`, `Delete`,
+  `DeleteOwner`, `AddRemove` and `Collapse` edit RRsets in place with
+  placement hints and carried comments; `Select`, `Owners`, `RRSets` and
+  `Serial` query; `Commit` runs the format-and-verify path and tells you
+  whether anything changed.
+
+```go
+z, err := masterfile.Open(data, "example.org.")
+rec, _ := masterfile.NewRecord("www", 0, dns.TypeA, "192.0.2.1")
+_, err = z.Replace(
+	masterfile.Selector{Owner: "www", Types: []uint16{dns.TypeA}},
+	[]masterfile.Entry{rec},
+	masterfile.ReplaceOptions{Mode: masterfile.ReplaceAll},
+)
+out, changed, err := z.Commit(true) // nil, false when the zone already said so
+```
 
 ```go
 f, err := masterfile.Parse(data)

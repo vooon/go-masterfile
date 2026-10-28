@@ -85,6 +85,40 @@ and where behaviour was pinned down.
   `NameEqual`, `Relative` and `NewRecord` stay byte-oriented as the spec
   requires; callers convert at their input and display boundaries.
 
+## Editing operations (edit spec sections 2, 3, 5)
+
+- `Zone` holds the apex, the entries as loaded and a working copy. Every
+  operation builds a new entry slice and assigns it; the loaded slice is
+  never touched, so `Changed` and purity come for free and failed
+  operations leave the zone as it was.
+- Owners are normalised once per call (`Zone.owner`): trimmed, made
+  absolute against the apex, checked with `InZone`, then made
+  apex-relative with `Relative`. Anchors in a `Placement` go through the
+  same check, so an anchor outside the zone is `ErrNotInZone` too rather
+  than silently matching nothing.
+- Content matching uses `Entry.Content` on the record side and
+  `normalizeContent` on the client side, per record type: a selector with
+  several types normalises each candidate against the type of the entry it
+  is compared with. For non-text types the client string is tokenised with
+  the zone lexer and its decoded fields joined by one space, so
+  `0 issue "ca.example"` matches a CAA record whose `Content` is
+  `0 issue ca.example` (spec 6.3). The spec's "collapse whitespace" wording
+  alone cannot satisfy that row; collapsing is the fallback for strings
+  that do not tokenise.
+- Carried comments (spec 2.7) are attached with `WithComments`, which joins
+  them into one trailing comment; the original texts remain as substrings,
+  which is what `Verify` checks.
+- `Result.Index` is the index in the working entries after the operation,
+  so callers can look at what was inserted via `Entries()`.
+- `Commit` does not reset the baseline: a `Zone` is one read-modify-write
+  cycle. After a successful commit the caller writes the bytes and opens
+  the file again for the next change.
+- `Open` returns `ErrNoSOA` both for a missing SOA and for an SOA whose
+  owner cannot be made absolute (relative owner, no `$ORIGIN`, no hint),
+  with a message naming the second case.
+- `Serial` reads the first SOA's third field; a non-numeric or overflowing
+  serial reports false rather than 0.
+
 ## Zone routing and reverse names (edit spec section 4)
 
 - `InZone` and `Relative` share one label-boundary check (`underOrigin`),

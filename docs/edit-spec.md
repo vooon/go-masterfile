@@ -315,7 +315,10 @@ func ReversePrefix(apex string) (netip.Prefix, bool)
 
 ## 6. Examples (normative)
 
-Inputs are zoneomatic's fixtures, kept byte for byte. Outputs below are
+Inputs are zoneomatic's fixtures. In this repository's `testdata/edit/`
+they carry documentation addresses instead (`192.0.2.0/24`, `2001:db8::/32`,
+reverse zone `2.0.192.in-addr.arpa.`); the layouts below are otherwise what
+the goldens hold. Outputs below are
 `Commit(true)` results in a test where the clock gives serial `1763822926`
 (one above the fixture's). The serial comment follows the core spec.
 

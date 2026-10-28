@@ -237,3 +237,5 @@ func FuzzParse(f *testing.F) {
 		}
 	})
 }
+
+func newRand(a, b uint64) *rand.Rand { return rand.New(rand.NewPCG(a, b)) }

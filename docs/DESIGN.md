@@ -85,6 +85,24 @@ and where behaviour was pinned down.
   `NameEqual`, `Relative` and `NewRecord` stay byte-oriented as the spec
   requires; callers convert at their input and display boundaries.
 
+## Zone routing and reverse names (edit spec section 4)
+
+- `InZone` and `Relative` share one label-boundary check (`underOrigin`),
+  so "is this name in that zone" and "what is its relative form" can never
+  disagree. The root apex `.` contains everything.
+- `LongestZone` counts labels with the same escape-aware splitter used by
+  the IDNA helpers (`labels`, an iterator), so `a\.b.example.` has two
+  labels under `example.`.
+- Reverse names are built from `netip.Addr` and parsed back strictly: octet
+  labels must be plain decimals 0..255 with no leading zeros, nibble labels
+  one hex digit in either case, and the arpa suffix is matched
+  case-insensitively with or without the trailing dot. `ReversePrefix`
+  accepts one to four octets or one to 32 nibbles and nothing else, which
+  excludes RFC 2317 classless labels by construction.
+- `IsReverseZone` requires at least one label before `in-addr.arpa.` or
+  `ip6.arpa.`, following the spec's "ends in" wording; the arpa domains
+  themselves are not reverse zones.
+
 ## Equality
 
 - `Entry.Equal` compares decoded values, so `"a b"` and `a\ b` in a TXT are

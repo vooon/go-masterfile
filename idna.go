@@ -60,20 +60,17 @@ func ToUnicode(name string) string {
 // and keeping the dots (including a trailing one) in place.
 func mapLabels(name string, fn func(string) (string, error)) (string, error) {
 	var b strings.Builder
-	start := 0
-	for i := 0; i <= len(name); i++ {
-		if i < len(name) && (name[i] != '.' || escapedAt(name, i)) {
-			continue
-		}
-		label, err := fn(name[start:i])
+	first := true
+	for label := range labels(name) {
+		mapped, err := fn(label)
 		if err != nil {
 			return "", err
 		}
-		b.WriteString(label)
-		if i < len(name) {
+		if !first {
 			b.WriteByte('.')
 		}
-		start = i + 1
+		first = false
+		b.WriteString(mapped)
 	}
 	return b.String(), nil
 }

@@ -1,0 +1,9 @@
+$ORIGIN example.org.
+$TTL 30
+@ IN SOA ns hostmaster 2024041300 4H 1H 7D 7200
+a 30 IN A 192.0.2.1
+b 60 IN A 192.0.2.2
+c IN A 192.0.2.3
+$TTL 1H
+d 3600 IN A 192.0.2.4
+e 30 IN A 192.0.2.5

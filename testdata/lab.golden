@@ -1,0 +1,33 @@
+; zone for the lab
+$ORIGIN lab.example.
+$TTL 1h
+@                    IN SOA    ns1 hostmaster.lab.example. (
+    2024090101 ; serial  Sun, 01 Sep 2024 #01 ; bump me
+    2h         ; refresh
+    30m        ; retry
+    2w         ; expire
+    1h         ; minimum
+)
+                     IN NS     ns1
+                     IN NS     ns2.lab.example.
+ns1                  IN A      192.0.2.53
+                     IN AAAA   2001:db8::53
+
+; web
+www              300 IN A      192.0.2.80
+                     IN TXT    "v=spf1 -all"
+                     IN TXT    (
+    "part one"
+    "part two"
+)
+_25._tcp.mail        IN TLSA   3 1 1 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+@                    IN CAA    0 issue "ca.example; validationmethods=dns-01"
+                     IN MX     10 mail
+                     IN DNSKEY 257 3 13 (
+    kXKkvWU3vGYfTJGl3nTy6g5zDpqwXUd6XaMnKzEZeIYbp5c+ThYZ2hC
+    WEOYoqNxzR4KYhUtKGnc4PbMBMuGl0w==
+)
+$ORIGIN guests.lab.example.
+alice                IN A      192.0.2.101 ; laptop
+                     IN A      192.0.2.102
+www.lab.example.     IN A      192.0.2.80

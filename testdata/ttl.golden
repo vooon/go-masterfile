@@ -1,0 +1,15 @@
+$ORIGIN example.org.
+$TTL 30
+@    IN SOA ns hostmaster (
+    2024041300 ; serial  Sat, 13 Apr 2024 #00
+    4H         ; refresh
+    1H         ; retry
+    7D         ; expire
+    7200       ; minimum
+)
+a    IN A   192.0.2.1
+b 60 IN A   192.0.2.2
+c    IN A   192.0.2.3
+$TTL 1H
+d    IN A   192.0.2.4
+e 30 IN A   192.0.2.5

@@ -33,7 +33,7 @@ func parseClass(u string) (string, bool) {
 	case "IN", "CH", "HS", "NONE", "ANY":
 		return u, true
 	}
-	if n, ok := strings.CutPrefix(u, "CLASS"); ok && allDigits(n) {
+	if n, ok := strings.CutPrefix(u, "CLASS"); ok {
 		if v, err := strconv.ParseUint(n, 10, 16); err == nil {
 			return "CLASS" + strconv.FormatUint(v, 10), true
 		}
@@ -47,24 +47,12 @@ func parseType(u string) (uint16, string, bool) {
 	if t, ok := typeNames[u]; ok {
 		return t, u, true
 	}
-	if n, ok := strings.CutPrefix(u, "TYPE"); ok && allDigits(n) {
+	if n, ok := strings.CutPrefix(u, "TYPE"); ok {
 		if v, err := strconv.ParseUint(n, 10, 16); err == nil {
 			return uint16(v), "TYPE" + strconv.FormatUint(v, 10), true
 		}
 	}
 	return 0, "", false
-}
-
-func allDigits(s string) bool {
-	if s == "" {
-		return false
-	}
-	for i := range len(s) {
-		if !isDigit(s[i]) {
-			return false
-		}
-	}
-	return true
 }
 
 // Parse parses zone file text into a [Zone]. Every entry is kept in order
@@ -153,7 +141,7 @@ func buildEntry(toks []token, line int) (Entry, error) {
 
 func buildDirective(toks []token) (Entry, error) {
 	first := toks[0]
-	e := Entry{kind: Directive, line: first.line, name: strings.ToUpper(first.raw)}
+	e := Entry{kind: Directive, line: first.line, name: upperASCII(first.raw)}
 	switch e.name {
 	case "$ORIGIN", "$TTL", "$INCLUDE", "$GENERATE":
 	default:
@@ -179,6 +167,9 @@ func collectFields(toks []token) (fields []Field, head, tail []string) {
 	for _, t := range toks {
 		switch t.kind {
 		case tokItem, tokQuoted:
+			if fields == nil {
+				fields = make([]Field, 0, len(toks))
+			}
 			fields = append(fields, Field{Raw: t.raw, Value: t.val, Quoted: t.kind == tokQuoted})
 		case tokComment:
 			if len(fields) == 0 {
@@ -217,7 +208,7 @@ func buildRecord(toks []token) (Entry, error) {
 		case tokQuoted:
 			return Entry{}, tokErr(t, "invalid type/class/ttl: "+t.raw)
 		}
-		u := strings.ToUpper(t.raw)
+		u := upperASCII(t.raw)
 		if c, ok := parseClass(u); ok {
 			if e.class != "" {
 				return Entry{}, tokErr(t, "double class")

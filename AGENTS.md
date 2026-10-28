@@ -114,6 +114,7 @@ still holds. When a new stdlib API supersedes an older one, use the new one.
 - Build: `go build ./...`
 - Verify: `gofmt -l .`, `go vet ./...`, `golangci-lint run`, `go test ./...`
 - Coverage: `go test -coverprofile=coverage.out . && go tool cover -func=coverage.out`
+- Benchmarks: `go test -run '^$' -bench . -benchmem .` (compare with benchstat before merging a change to the lexer, formatter or operations)
 - Fuzz: `go test -run '^$' -fuzz=FuzzParse -fuzztime=30s .`
 - Regenerate goldens: `go test ./... -update` (review the diff before committing)
 

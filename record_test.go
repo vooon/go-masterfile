@@ -484,3 +484,55 @@ $NOPE
 	assert.Equal(t, 2, pe.Line, "error = %v", err)
 	assert.Equal(t, "missing type", pe.Msg, "error = %v", err)
 }
+
+func TestASCIIFolding(t *testing.T) {
+	// RFC 4343: only ASCII letters fold. Unicode case mapping would turn
+	// "ı" (U+0131) into "I" and "ſ" (U+017F) into "S", so "ın" would pass
+	// as the class IN and "ſoa" as the type SOA.
+	assert.Equal(t, "IN", upperASCII("in"))
+	assert.Equal(t, "ıN", upperASCII("ın"))
+	assert.Equal(t, "ſOA", upperASCII("ſoa"))
+	assert.Equal(t, "A\xffB", upperASCII("a\xffb"), "raw bytes survive")
+	assert.Equal(t, "www", foldASCII("WWW"))
+	assert.Equal(t, "Kx", foldASCII("KX"), "Kelvin sign is not k")
+	s := "ALREADY"
+	assert.Equal(t, s, upperASCII(s), "unchanged input")
+	_, err := Parse([]byte(`a ın A 192.0.2.1
+`), "")
+	assert.Error(t, err, "ın is not a class")
+	_, err = Parse([]byte(`a IN ſoa ns host 1 2 3 4 5
+`), "")
+	assert.Error(t, err, "ſoa is not a type")
+	_, err = NewDirective("$ttl", "1h")
+	assert.NoError(t, err, "ASCII lower-case directive name")
+	assert.True(t, IsReverseZone("2.0.192.in-addr.arpa"))
+	assert.True(t, IsReverseZone("2.0.192.IN-ADDR.ARPA."))
+	assert.False(t, IsReverseZone("in-addr.arpa."), "the arpa domain itself is not a reverse zone")
+}
+
+func TestWithCommentsOneLine(t *testing.T) {
+	// A comment can never end the line: terminators and NUL become spaces.
+	e, err := NewRecord("www", 0, dns.TypeA, "192.0.2.1")
+	require.NoError(t, err)
+	got := e.WithComments("note\nevil IN A 192.0.2.2", "\r\n", "x\x00y")
+	assert.Equal(t, []string{"; note evil IN A 192.0.2.2 ; x y"}, got.Tail())
+	var b bytes.Buffer
+	require.NoError(t, writePlain(&b, "example.org.", "example.org.", []Entry{got}))
+	z, err := Parse(b.Bytes(), "example.org.")
+	require.NoError(t, err)
+	assert.Len(t, z.Entries, 1, "still one entry: %q", b.String())
+}
+
+func TestContent(t *testing.T) {
+	es := parseEntries(t, `a IN A 192.0.2.1
+b IN MX 10 mail
+c IN TXT "x" "y z"
+d IN TYPE65280 \# 0
+`)
+	assert.Equal(t, "192.0.2.1", es[0].Content())
+	assert.Equal(t, "10 mail", es[1].Content())
+	assert.Equal(t, "xy z", es[2].Content())
+	assert.Equal(t, "# 0", es[3].Content(), "decoded: the backslash escapes #")
+	var zero Entry
+	assert.Empty(t, zero.Content())
+}

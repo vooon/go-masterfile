@@ -73,11 +73,16 @@ func ReverseAddr(name string) (netip.Addr, bool) {
 }
 
 // IsReverseZone reports whether apex lies under in-addr.arpa or ip6.arpa
-// (case-insensitive; a trailing dot is optional).
+// (ASCII case-insensitive; a trailing dot is optional).
 func IsReverseZone(apex string) bool {
-	a := strings.ToLower(Fqdn(apex))
-	return len(a) > len(v4Arpa) && strings.HasSuffix(a, v4Arpa) ||
-		len(a) > len(v6Arpa) && strings.HasSuffix(a, v6Arpa)
+	a := Fqdn(apex)
+	return hasSuffixFold(a, v4Arpa) || hasSuffixFold(a, v6Arpa)
+}
+
+// hasSuffixFold reports whether s ends with suffix and has something before
+// it, comparing with [NameEqual].
+func hasSuffixFold(s, suffix string) bool {
+	return len(s) > len(suffix) && NameEqual(s[len(s)-len(suffix):], suffix)
 }
 
 // ReversePrefix returns the address prefix a reverse zone apex covers:
@@ -117,7 +122,7 @@ func ReversePrefix(apex string) (netip.Prefix, bool) {
 // suffix is absent or nothing precedes it.
 func reverseLabels(name, suffix string) ([]string, bool) {
 	name = Fqdn(name)
-	if len(name) <= len(suffix) || !strings.EqualFold(name[len(name)-len(suffix):], suffix) {
+	if !hasSuffixFold(name, suffix) {
 		return nil, false
 	}
 	return strings.Split(name[:len(name)-len(suffix)], "."), true
@@ -125,10 +130,10 @@ func reverseLabels(name, suffix string) ([]string, bool) {
 
 // octet parses a decimal label 0..255 with no sign or leading zeros.
 func octet(s string) (byte, bool) {
-	if !allDigits(s) || len(s) > 3 || (len(s) > 1 && s[0] == '0') {
+	if len(s) > 3 || (len(s) > 1 && s[0] == '0') {
 		return 0, false
 	}
-	v, err := strconv.ParseUint(s, 10, 8)
+	v, err := strconv.ParseUint(s, 10, 8) // digits only: no sign, no underscore
 	return byte(v), err == nil
 }
 

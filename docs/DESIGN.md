@@ -14,6 +14,12 @@ and where behaviour was pinned down.
   newline token into one entry.
 - **Owner presence** is decided by the first token's column: an item at
   column 1 is the owner; anything else means the owner is inherited.
+- **Decoding is lazy**: a token's decoded value is the raw text itself
+  until the first backslash is seen, and only then is a buffer allocated
+  and the bytes so far copied (`decoded` in `lex.go`). Escapes are rare in
+  real zones, so this removes the per-byte `append` that dominated the
+  allocation profile of `Parse` (about 37k to 15k allocations for a 64 KiB
+  zone). `bench_test.go` holds the benchmarks (`go test -bench .`).
 - **Comment attachment**: comments are attached by position while fields
   are collected. A comment before the first field goes to `head`, a comment
   after field *n* goes to field *n*, and comments after the last field move
@@ -90,6 +96,15 @@ and where behaviour was pinned down.
   the formatter's, and the tests re-parse with the hint they started with.
 - `NameEqual` is literal apart from ASCII case: `www` and `www.` differ.
   Normalisation is the caller's job via `Fqdn`/`Absolute`.
+- **Case folding is ASCII-only everywhere**, not just in `NameEqual`:
+  class, type and directive names are matched through `upperASCII`, the
+  `RRSets` key and the arpa suffix checks through `foldASCII`/`NameEqual`.
+  `strings.ToUpper`/`ToLower`/`EqualFold` apply Unicode mappings under
+  which `ı` (U+0131) becomes `I`, `ſ` (U+017F) becomes `S` and the Kelvin
+  sign folds to `k`, so `a ın A ...` would have parsed as class IN and two
+  owners differing only in such a byte would have merged. The helpers also
+  leave bytes above 0x7F untouched, which `strings.Map` would not (invalid
+  UTF-8 becomes U+FFFD).
 
 ## Internationalised names
 
@@ -145,7 +160,17 @@ and where behaviour was pinned down.
   down (a new name with no anchors goes to the end).
 - Carried comments (spec 2.7) are attached with `WithComments`, which joins
   them into one trailing comment; the original texts remain as substrings,
-  which is what `Verify` checks.
+  which is what `Verify` checks. `WithComments` is exported and has no
+  error return, so it folds line terminators and NUL into spaces instead
+  of trusting its caller: a comment taken from a client can then never end
+  the line and smuggle in a record, which `Verify` would not catch because
+  both renderings would carry the same extra record. `NewComment` keeps
+  the strict, erroring form.
+- Selector contents are normalised once per record type met, not once per
+  entry (`matcher`), and `relOwner` only does work for an owner that was
+  set by hand in absolute form; together with a one-pass `Content` this
+  took `Apply` of a `Replace` on a 1000-record zone from about 1500 to
+  170 allocations.
 - `Result.Index` is the index in `Entries` after the operation, so callers
   can look at what was inserted.
 - `Serial` reads the first SOA's third field; a non-numeric or overflowing

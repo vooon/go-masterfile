@@ -5,6 +5,7 @@ package masterfile
 import (
 	"bytes"
 	"fmt"
+	"strconv"
 )
 
 // ParseError describes a syntax error in zone file text. Line and Col are
@@ -16,7 +17,7 @@ type ParseError struct {
 }
 
 // Error implements the error interface as "line L: msg".
-func (e *ParseError) Error() string { return fmt.Sprintf("line %d: %s", e.Line, e.Msg) }
+func (e *ParseError) Error() string { return "line " + strconv.Itoa(e.Line) + ": " + e.Msg }
 
 type tokKind uint8
 
@@ -153,12 +154,48 @@ done:
 	return tok, nil
 }
 
+// decoded accumulates the decoded form of a token only once an escape is
+// seen; until then the decoded form is the raw text itself and nothing is
+// copied. from is the start of the token's content in the lexer's data.
+type decoded struct {
+	buf  []byte
+	from int
+}
+
+// escape appends the escape sequence at pos (decoded) to the buffer,
+// copying the plain bytes seen so far on the first call, and returns the
+// number of input bytes consumed.
+func (d *decoded) escape(data []byte, pos int) int {
+	if d.buf == nil {
+		d.buf = make([]byte, 0, 2*(pos-d.from)+8)
+		d.buf = append(d.buf, data[d.from:pos]...)
+	}
+	b, n := decodeEscape(data[pos:])
+	d.buf = append(d.buf, b)
+	return n
+}
+
+// plain records one unescaped byte.
+func (d *decoded) plain(c byte) {
+	if d.buf != nil {
+		d.buf = append(d.buf, c)
+	}
+}
+
+// value returns the decoded text: raw when no escape was seen.
+func (d *decoded) value(raw string) string {
+	if d.buf == nil {
+		return raw
+	}
+	return string(d.buf)
+}
+
 // quoted scans a "..." string, decoding escapes into val.
 func (l *lexer) quoted() (token, error) {
 	tok := token{kind: tokQuoted, line: l.line, col: l.col()}
 	start := l.pos
 	l.pos++
-	var val []byte
+	val := decoded{from: l.pos}
 	for {
 		if l.pos >= len(l.data) {
 			return token{}, l.errorf("unterminated quoted string")
@@ -166,7 +203,8 @@ func (l *lexer) quoted() (token, error) {
 		switch c := l.data[l.pos]; c {
 		case '"':
 			l.pos++
-			tok.raw, tok.val = string(l.data[start:l.pos]), string(val)
+			tok.raw = string(l.data[start:l.pos])
+			tok.val = val.value(tok.raw[1 : len(tok.raw)-1])
 			return tok, nil
 		case '\n', '\r':
 			return token{}, l.errorf("unterminated quoted string")
@@ -179,11 +217,9 @@ func (l *lexer) quoted() (token, error) {
 			if l.data[l.pos+1] == 0 {
 				return token{}, l.errorf("NUL byte")
 			}
-			b, n := decodeEscape(l.data[l.pos:])
-			val = append(val, b)
-			l.pos += n
+			l.pos += val.escape(l.data, l.pos)
 		default:
-			val = append(val, c)
+			val.plain(c)
 			l.pos++
 		}
 	}
@@ -194,7 +230,7 @@ func (l *lexer) quoted() (token, error) {
 func (l *lexer) item() (token, error) {
 	tok := token{kind: tokItem, line: l.line, col: l.col()}
 	start := l.pos
-	var val []byte
+	val := decoded{from: start}
 scan:
 	for l.pos < len(l.data) {
 		switch c := l.data[l.pos]; c {
@@ -209,14 +245,13 @@ scan:
 			if l.data[l.pos+1] == 0 {
 				return token{}, l.errorf("NUL byte")
 			}
-			b, n := decodeEscape(l.data[l.pos:])
-			val = append(val, b)
-			l.pos += n
+			l.pos += val.escape(l.data, l.pos)
 		default:
-			val = append(val, c)
+			val.plain(c)
 			l.pos++
 		}
 	}
-	tok.raw, tok.val = string(l.data[start:l.pos]), string(val)
+	tok.raw = string(l.data[start:l.pos])
+	tok.val = val.value(tok.raw)
 	return tok, nil
 }

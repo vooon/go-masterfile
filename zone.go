@@ -111,12 +111,14 @@ func (z *Zone) AbsoluteOwner(e Entry) string {
 }
 
 // relOwner returns an entry's owner relative to the apex, normalising
-// owners that were set by hand in absolute form.
+// owners that were set by hand in absolute form. A relative owner is
+// already in that form (Parse and the operations store it so), and "@" is
+// itself, so only an absolute owner needs work.
 func (z *Zone) relOwner(e Entry) string {
-	if e.owner == "" {
-		return ""
+	if isAbsolute(e.owner) {
+		return Relative(e.owner, z.apex)
 	}
-	return Relative(Absolute(e.owner, z.apex), z.apex)
+	return e.owner
 }
 
 // Format writes the zone in the canonical layout: aligned owner, TTL,

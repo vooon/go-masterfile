@@ -107,10 +107,10 @@ type Placement []Anchor
 // as it was, with nothing applied. Errors are [ErrNotInZone],
 // [ErrNotFound] and, for records that cannot be built, [ErrInvalidRecord].
 func (z *Zone) Apply(ops ...Op) ([]Result, error) {
-	work := &Zone{Entries: z.Entries, Changed: z.Changed, apex: z.apex}
+	work := *z // shallow: every operation builds a new entry slice
 	results := make([]Result, 0, len(ops))
 	for i, op := range ops {
-		r, err := op.apply(work)
+		r, err := op.apply(&work)
 		if err != nil {
 			return nil, fmt.Errorf("op %d (%T): %w", i, op, err)
 		}
@@ -179,23 +179,37 @@ func normalizeContent(rtype uint16, s string) string {
 	return strings.Join(strings.Fields(s), " ")
 }
 
-// matches reports whether e is a Record matched by sel, whose owner is
-// already normalised to owner.
-func (z *Zone) matches(sel Selector, owner string, e Entry) bool {
-	if e.kind != Record {
-		return false
+// matcher returns the predicate "e is a Record matched by sel", with sel's
+// owner already normalised to owner. The client contents are normalised
+// once per record type met, not once per entry.
+func (z *Zone) matcher(sel Selector, owner string) func(e Entry) bool {
+	var norm map[uint16][]string
+	return func(e Entry) bool {
+		if e.kind != Record {
+			return false
+		}
+		if owner != "" && !NameEqual(z.relOwner(e), owner) {
+			return false
+		}
+		if sel.Types != nil && !slices.Contains(sel.Types, e.rtype) {
+			return false
+		}
+		if sel.Contents == nil {
+			return true
+		}
+		cs, ok := norm[e.rtype]
+		if !ok {
+			cs = make([]string, len(sel.Contents))
+			for i, c := range sel.Contents {
+				cs[i] = normalizeContent(e.rtype, c)
+			}
+			if norm == nil {
+				norm = make(map[uint16][]string, 1)
+			}
+			norm[e.rtype] = cs
+		}
+		return slices.Contains(cs, e.Content())
 	}
-	if owner != "" && !NameEqual(z.relOwner(e), owner) {
-		return false
-	}
-	if sel.Types != nil && !slices.Contains(sel.Types, e.rtype) {
-		return false
-	}
-	if sel.Contents != nil {
-		content := e.Content()
-		return slices.ContainsFunc(sel.Contents, func(c string) bool { return normalizeContent(e.rtype, c) == content })
-	}
-	return true
 }
 
 // inSet reports whether e is a Record of the (owner, type) set.
@@ -332,8 +346,9 @@ func (op Replace) apply(z *Zone) (Result, error) {
 	res := Result{Index: -1}
 	out := make([]Entry, 0, len(z.Entries)+len(records))
 	var carried []string
+	matches := z.matcher(op.Selector, owner)
 	for _, e := range z.Entries {
-		if !z.matches(op.Selector, owner, e) {
+		if !matches(e) {
 			out = append(out, e)
 			continue
 		}
@@ -601,8 +616,9 @@ func (z *Zone) Select(sel Selector) []Entry {
 		return nil
 	}
 	var out []Entry
+	matches := z.matcher(sel, owner)
 	for _, e := range z.Entries {
-		if z.matches(sel, owner, e) {
+		if matches(e) {
 			out = append(out, e)
 		}
 	}
@@ -646,7 +662,7 @@ func (z *Zone) RRSets() []RRSet {
 			continue
 		}
 		owner := z.AbsoluteOwner(e)
-		key := strings.ToLower(owner) + "\x00" + e.typ
+		key := foldASCII(owner) + "\x00" + e.typ
 		i, ok := index[key]
 		if !ok {
 			secs, _ := ttl.effective(e)

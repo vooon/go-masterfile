@@ -2,7 +2,10 @@
 
 package masterfile
 
-import "strings"
+import (
+	"iter"
+	"strings"
+)
 
 // Fqdn returns name with a trailing dot added if it has none. An empty name
 // becomes the root ".".
@@ -74,11 +77,81 @@ func Relative(name, origin string) string {
 	if NameEqual(name, origin) {
 		return "@"
 	}
+	if rel, ok := underOrigin(name, origin); ok {
+		return rel
+	}
+	return name
+}
+
+// underOrigin reports whether name is strictly below origin (both absolute)
+// on a label boundary and returns the relative part. An escaped dot is not
+// a boundary.
+func underOrigin(name, origin string) (string, bool) {
 	cut := len(name) - len(origin) - 1
 	if cut < 1 || name[cut] != '.' || escapedAt(name, cut) || !NameEqual(name[cut+1:], origin) {
-		return name
+		return "", false
 	}
-	return name[:cut]
+	return name[:cut], true
+}
+
+// InZone reports whether name is the apex or lies below it, both taken as
+// absolute names and compared with [NameEqual] on a label boundary:
+// "www.example.org." is in "example.org.", "myexample.org." is not.
+func InZone(name, apex string) bool {
+	name, apex = Fqdn(name), Fqdn(apex)
+	if NameEqual(name, apex) {
+		return true
+	}
+	if apex == "." {
+		return true
+	}
+	_, ok := underOrigin(name, apex)
+	return ok
+}
+
+// LongestZone returns the apex among apexes that contains name (see
+// [InZone]) and has the most labels, so the most specific zone wins. ok is
+// false when no apex contains the name.
+func LongestZone(name string, apexes []string) (apex string, ok bool) {
+	best := -1
+	for _, a := range apexes {
+		if !InZone(name, a) {
+			continue
+		}
+		if n := labelCount(a); n > best {
+			apex, best, ok = a, n, true
+		}
+	}
+	return apex, ok
+}
+
+// labelCount counts the labels of a name, splitting on unescaped dots and
+// ignoring the root.
+func labelCount(name string) int {
+	n := 0
+	for label := range labels(Fqdn(name)) {
+		if label != "" {
+			n++
+		}
+	}
+	return n
+}
+
+// labels iterates over the labels of name, split on unescaped dots. The
+// text after a trailing dot is yielded as an empty label.
+func labels(name string) iter.Seq[string] {
+	return func(yield func(string) bool) {
+		start := 0
+		for i := 0; i <= len(name); i++ {
+			if i < len(name) && (name[i] != '.' || escapedAt(name, i)) {
+				continue
+			}
+			if !yield(name[start:i]) {
+				return
+			}
+			start = i + 1
+		}
+	}
 }
 
 // Absolute resolves name against origin: "@" is the origin, an absolute

@@ -23,6 +23,9 @@ hand and that a name server (BIND, Knot, CoreDNS) then loads:
 - **ToASCII** and **ToUnicode** convert internationalised names between
   their Unicode and `xn--` forms, label by label, at your input and display
   boundaries.
+- **InZone**, **LongestZone**, **ReverseName**, **ReverseAddr**,
+  **IsReverseZone** and **ReversePrefix** route names to zones and build or
+  parse `in-addr.arpa` and `ip6.arpa` names and prefixes.
 
 ```go
 f, err := masterfile.Parse(data)

@@ -6,9 +6,11 @@ every comment and blank line a human put there. The authoritative spec is
 `docs/spec.md`; read it before writing code.
 
 ## Source of truth
-- `docs/spec.md` is the authoritative spec. Its section 8 examples are
-  normative: expected outputs are behavioural requirements, reproduced
-  byte-exact.
+- `docs/spec.md` is the authoritative spec for parsing, formatting and
+  verification; `docs/edit-spec.md` specifies the editing operations and
+  the routing/reverse-zone helpers, all in the same package. Their example
+  sections are normative: expected outputs are behavioural requirements,
+  reproduced byte-exact.
 - Open decisions (spec section 11) and anything the spec leaves unanswered
   are decided from the RFCs and the spec's intent, and recorded in `docs/DESIGN.md`.
 - User instructions in chat override both unless they conflict with safety

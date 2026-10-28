@@ -90,3 +90,54 @@ func tokenise(s string) ([]token, error) {
 		toks = append(toks, t)
 	}
 }
+
+// ErrInvalidEntry is wrapped by every error of [NewDirective] and
+// [NewComment].
+var ErrInvalidEntry = errors.New("invalid entry")
+
+// NewDirective builds a Directive entry from its name ($ORIGIN, $TTL,
+// $INCLUDE or $GENERATE, any case) and arguments. Like [NewRecord] it is a
+// security boundary: each argument must tokenise as exactly one item or
+// quoted string, so it can never add a line, a comment or a second entry;
+// a $TTL argument must be a valid TTL. Errors wrap [ErrInvalidEntry].
+func NewDirective(name string, args ...string) (Entry, error) {
+	e := Entry{kind: Directive, name: strings.ToUpper(name)}
+	switch e.name {
+	case "$ORIGIN", "$TTL", "$INCLUDE", "$GENERATE":
+	default:
+		return Entry{}, fmt.Errorf("%w: unknown directive %q", ErrInvalidEntry, name)
+	}
+	if len(args) == 0 {
+		return Entry{}, fmt.Errorf("%w: %s without argument", ErrInvalidEntry, e.name)
+	}
+	for _, a := range args {
+		toks, err := tokenise(a)
+		if err != nil {
+			return Entry{}, fmt.Errorf("%w: argument %q: %w", ErrInvalidEntry, a, err)
+		}
+		if len(toks) != 1 || (toks[0].kind != tokItem && toks[0].kind != tokQuoted) {
+			return Entry{}, fmt.Errorf("%w: argument %q must be a single item", ErrInvalidEntry, a)
+		}
+		e.args = append(e.args, Field{Raw: toks[0].raw, Value: toks[0].val, Quoted: toks[0].kind == tokQuoted})
+	}
+	if e.name == "$TTL" {
+		if _, ok := StringToTTL(e.args[0].Value); !ok {
+			return Entry{}, fmt.Errorf("%w: invalid TTL %q", ErrInvalidEntry, args[0])
+		}
+	}
+	return e, nil
+}
+
+// NewComment builds a Comment entry: one line holding only text, which gets
+// a leading "; " when it does not start with ";". Line terminators and NUL
+// are rejected, so the text can never become a second line. Errors wrap
+// [ErrInvalidEntry].
+func NewComment(text string) (Entry, error) {
+	if strings.ContainsAny(text, "\r\n\x00") {
+		return Entry{}, fmt.Errorf("%w: comment holds a line terminator or NUL", ErrInvalidEntry)
+	}
+	if !strings.HasPrefix(text, ";") {
+		text = "; " + text
+	}
+	return Entry{kind: Comment, comment: strings.TrimRight(text, " \t")}, nil
+}

@@ -44,19 +44,20 @@ func Records(apex string, data []byte) (map[string]int, error) {
 // Comments parses data with this package's parser and returns every comment
 // in file order. It is exported for tests.
 func Comments(data []byte) ([]string, error) {
-	f, err := Parse(data)
+	z, err := Parse(data, "")
 	if err != nil {
 		return nil, err
 	}
 	var out []string
-	for _, e := range f.Entries {
+	for _, e := range z.Entries {
 		out = append(out, e.Comments()...)
 	}
 	return out, nil
 }
 
 // Verify proves that formatted is a safe replacement for plain (both
-// renderings of the same entries, see [WritePlain] and [Format]): both must
+// renderings of the same zone, see [Zone.WritePlain] and [Zone.Format]):
+// both must
 // parse with the reference parser, hold the same multiset of records (SOA
 // serial ignored), and every user comment of plain (see [UserComment]) must
 // occur in a comment of formatted. Errors wrap [ErrUnsafeWrite] and list

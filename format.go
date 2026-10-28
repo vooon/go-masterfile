@@ -53,11 +53,10 @@ type layout struct {
 }
 
 // plan runs the first pass: display owners relative to the $ORIGIN in
-// force, blank repeated owners, drop TTLs equal to the $TTL in force, and
-// measure the columns.
-func plan(apex string, entries []Entry) layout {
+// force (origin before the first $ORIGIN line), blank repeated owners,
+// drop TTLs equal to the $TTL in force, and measure the columns.
+func plan(origin, apex string, entries []Entry) layout {
 	l := layout{owner: make([]string, len(entries)), ttl: make([]string, len(entries))}
-	origin := apex
 	var ttl ttlState
 	prev, havePrev := "", false
 	for i, e := range entries {
@@ -134,18 +133,11 @@ func withSpace(s string) string {
 	return " " + s
 }
 
-// Format writes entries whose owners have been resolved with
-// [File.ResolveOwners] against apex in the canonical layout: aligned
-// owner, TTL, class, type and value columns; owners relative to the $ORIGIN
-// in force and blank when repeated; TTLs equal to the $TTL in force
-// dropped; SOA and multi-string TXT records multi-line; long DNSKEY, DS and
-// RRSIG data split into 55-byte pieces; comments kept in place. With
-// bumpSerial the first SOA's serial is replaced by [Increase] of itself.
-// The output is idempotent: formatting it again (without a bump)
-// reproduces it byte for byte. Write errors are returned.
-func Format(w io.Writer, apex string, entries []Entry, bumpSerial bool) error {
+// format implements [Zone.Format] over resolved entries; origin is the
+// origin in force before the first $ORIGIN line.
+func format(w io.Writer, origin, apex string, entries []Entry, bumpSerial bool) error {
 	lw := &lineWriter{w: bufio.NewWriter(w)}
-	l := plan(apex, entries)
+	l := plan(origin, apex, entries)
 	bumped := false
 	for i, e := range entries {
 		switch e.kind {
@@ -278,21 +270,13 @@ func formatSOA(lw *lineWriter, prefix string, e Entry, bumpSerial bool) error {
 	return nil
 }
 
-// Reformat parses data, finds the apex with [File.Origin] (falling back to
-// the root "." when none is known), resolves owners and writes the
-// canonical layout to w. It is Parse, Origin, ResolveOwners and Format in
-// one call, for formatter commands and tests.
-func Reformat(data []byte, originHint string, w io.Writer, bumpSerial bool) error {
-	f, err := Parse(data)
+// Reformat parses data (see [Parse] for how apex is used) and writes the
+// canonical layout to w. It is [Parse] and [Zone.Format] in one call, for
+// formatter commands and tests.
+func Reformat(data []byte, apex string, w io.Writer, bumpSerial bool) error {
+	z, err := Parse(data, apex)
 	if err != nil {
 		return err
 	}
-	apex, _ := f.Origin(originHint)
-	if apex == "" {
-		apex = "."
-	}
-	if err := f.ResolveOwners(apex); err != nil {
-		return err
-	}
-	return Format(w, apex, f.Entries, bumpSerial)
+	return z.Format(w, bumpSerial)
 }

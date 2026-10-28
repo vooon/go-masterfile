@@ -11,21 +11,24 @@
 //
 // # Pipeline
 //
-// A typical edit goes through these steps:
+// Everything revolves around one type, [Zone]:
 //
-//  1. [Parse] the text into a [File] of entries (blank lines, comments,
-//     directives and records).
-//  2. [File.Origin] finds the apex (the owner of the first SOA).
-//  3. [File.ResolveOwners] makes every record's owner explicit and relative
-//     to the apex, so entries can be found, moved, compared and replaced
-//     without regard to their position or to $ORIGIN lines.
-//  4. Edit the entry list: [NewRecord] builds records safely from parts that
-//     may come from network clients; [Entry.Equal] and [EntriesEqual]
-//     detect changes.
-//  5. [Format] writes the entries back in one canonical, aligned layout.
-//  6. [Verify] proves with the reference parser that the formatted text
-//     holds exactly the records and user comments of the plain rendering
-//     produced by [WritePlain], before the result replaces the original.
+//  1. [Parse] the text into a Zone (or start one with [New]). Parse finds
+//     the apex, checks it against the caller's expectation and makes every
+//     record owner explicit and relative to the apex, so entries can be
+//     found, moved, compared and replaced without regard to their position
+//     or to $ORIGIN lines.
+//  2. Edit it: range over [Zone.Records] and splice [Zone.Entries] by hand
+//     (setting [Zone.Changed]), or apply the operations [Zone.Replace],
+//     [Zone.Delete], [Zone.DeleteOwner], [Zone.AddRemove] and
+//     [Zone.Collapse], which place records where a human would and set
+//     Changed only when the zone's meaning changed. [NewRecord],
+//     [NewDirective] and [NewComment] build entries safely from parts that
+//     may come from network clients.
+//  3. [Zone.Commit] renders the result: nothing while Changed is false,
+//     otherwise the canonical layout of [Zone.Format], proven safe by
+//     [Verify] against the plain rendering of [Zone.WritePlain]. The caller
+//     writes the bytes.
 //
-// [Reformat] runs steps 1, 2, 3 and 5 in one call for formatter commands.
+// [Reformat] is Parse and Format in one call for formatter commands.
 package masterfile

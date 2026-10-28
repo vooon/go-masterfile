@@ -88,8 +88,8 @@ func (s ttlState) effective(e Entry) (uint32, bool) {
 
 // EntriesEqual compares two entry lists by meaning: same length, pairwise
 // [Entry.Equal] ignoring explicit TTLs, and equal effective TTLs for records
-// (both unknown is equal; known versus unknown is not). It is the test for
-// whether an edit changed anything.
+// (both unknown is equal; known versus unknown is not). The editing
+// operations use it to decide whether they changed the zone.
 func EntriesEqual(a, b []Entry) bool {
 	if len(a) != len(b) {
 		return false

@@ -5,6 +5,8 @@ package masterfile
 import (
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
 )
 
 func withClock(t *testing.T, unix int64) {
@@ -26,9 +28,7 @@ func TestIncrease(t *testing.T) {
 		{"", ""},
 		{"99999999999", "99999999999"},
 	} {
-		if got := Increase(tc.in); got != tc.want {
-			t.Errorf("Increase(%q) = %q, want %q", tc.in, got, tc.want)
-		}
+		assert.Equal(t, tc.want, Increase(tc.in), "Increase(%q)", tc.in)
 	}
 }
 
@@ -43,9 +43,7 @@ func TestUserComment(t *testing.T) {
 		{"; bump me", "; bump me"},
 		{"; refresh", "; refresh"},
 	} {
-		if got := UserComment(tc.in); got != tc.want {
-			t.Errorf("UserComment(%q) = %q, want %q", tc.in, got, tc.want)
-		}
+		assert.Equal(t, tc.want, UserComment(tc.in), "UserComment(%q)", tc.in)
 	}
 }
 
@@ -58,8 +56,6 @@ func TestRenderSerial(t *testing.T) {
 		{"1989123199", "Wed, 12 Jan 2033 06:13:19 UTC"}, // below the date range
 		{"x", ""},
 	} {
-		if got := renderSerial(tc.in); got != tc.want {
-			t.Errorf("renderSerial(%q) = %q, want %q", tc.in, got, tc.want)
-		}
+		assert.Equal(t, tc.want, renderSerial(tc.in), "renderSerial(%q)", tc.in)
 	}
 }

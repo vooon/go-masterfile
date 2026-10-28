@@ -50,21 +50,44 @@ and where behaviour was pinned down.
   package mutates an entry's slices after construction, `WithComments` and
   `WithOwner` return new values, and accessors that expose slices
   (`Fields`, `Args`, `Head`, `Tail`, `Comments`, `Values`, `RawValues`)
-  return fresh copies. `File.ResolveOwners` only assigns the owner string.
+  return fresh copies. Owner resolution in `Parse` only assigns the owner
+  string.
 - **TTL** is stored as a value plus a `hasTTL` flag; `Entry.TTL()` returns
   `(TTL, bool)` rather than a pointer, so no caller can reach inside.
-- **`File.Records()`** is a range-over-func iterator yielding index and
-  entry, so callers can find a record and then splice `File.Entries`.
+- **`Zone` is the one type** a caller touches: `Parse` and `New` build it,
+  its `Entries` are open for ranging and splicing, the operations and the
+  writers are methods. `Zone.Records()` is a range-over-func iterator
+  yielding index and entry, so callers can find a record and then splice
+  `Zone.Entries`.
+- **`Zone.Changed` is a flag**, not a diff against a baseline: operations
+  set it when `EntriesEqual` says the meaning changed, hand edits set it
+  explicitly, `Commit` reads it. Cheaper than keeping a copy, and honest
+  about hand edits the library cannot see.
+- **`Parse` always resolves owners.** There is no half-parsed state: the
+  apex comes from the caller's argument, the SOA, the first `$ORIGIN` or
+  the root, in that order of trust, and a caller's argument that
+  contradicts the SOA is an error rather than a silent choice.
+  `Zone.Check` is the separate, opt-in gate for "serveable on its own"
+  (origin known, SOA present), so `$INCLUDE` fragments remain first-class.
 
 ## Names
 
 - `Relative` under the root origin `.` strips the trailing dot of every
   absolute name (`www.` becomes `www`, `.` becomes `@`) unless another dot
-  would remain (`..` stays, so repeated formatting cannot erode a name). `Reformat` falls
+  would remain (`..` stays, so repeated formatting cannot erode a name). `Parse` falls
   back to `.` when no apex is known, and this rule keeps origin-less files
   such as `www IN A ...` byte-stable instead of turning them into `www.`.
-- `Absolute("@", "")` is `""`; `ResolveOwners` turns an `@` owner with no
-  origin into an error instead of writing an empty owner.
+- `Absolute("@", "")` is `""`, but `Parse` never resolves against an empty
+  origin: with the root fallback `@` stays `@`, and `Check` reports the
+  missing origin to callers that need one.
+- Resolution and display start from the same origin, the caller's hint or
+  the root, which the `Zone` remembers; neither starts from the apex that
+  was found. Otherwise a file without `$ORIGIN` whose SOA owner is `0`
+  would resolve that record to `0.0.` (fuzz-found), and a record written
+  before a late `$ORIGIN` would be rewritten with a trailing dot. The
+  price is that re-parsing such a file *with* its found apex as the hint
+  reads its relative names differently; that is the file's ambiguity, not
+  the formatter's, and the tests re-parse with the hint they started with.
 - `NameEqual` is literal apart from ASCII case: `www` and `www.` differ.
   Normalisation is the caller's job via `Fqdn`/`Absolute`.
 
@@ -84,6 +107,49 @@ and where behaviour was pinned down.
 - Nothing in the package converts implicitly. Zone files hold A-labels and
   `NameEqual`, `Relative` and `NewRecord` stay byte-oriented as the spec
   requires; callers convert at their input and display boundaries.
+
+## Editing operations (edit spec sections 2, 3, 5)
+
+- Operations are values (`Replace`, `Insert`, `Delete`, `DeleteOwner`,
+  `AddRemove`, `Collapse`) with an unexported `apply`; `Zone.Apply` is the
+  only mutator. It works on a shallow copy of the zone and installs the
+  result at the end, so a failing operation anywhere in the list leaves
+  the zone untouched. Every operation builds a new entry slice rather than
+  editing in place, which is what makes that copy safe to share.
+- Records inside operations are `RR{Type, TTL, Content}` data. `Apply`
+  builds entries with `NewRecord` under the operation's owner, respelled
+  to the owner the zone already uses when it has matching records (spec
+  6.2 wants `loop` even when the client said `LOOP.at.example.com.`).
+- Owners are normalised once per call (`Zone.owner`): trimmed, made
+  absolute against the apex, checked with `InZone`, then made
+  apex-relative with `Relative`. Anchors go through the same check, so an
+  anchor outside the zone is `ErrNotInZone` too rather than silently
+  matching nothing. Matching compares owners through `relOwner`, so
+  entries appended by hand with absolute owners are found as well.
+- Content matching uses `Entry.Content` on the record side and
+  `normalizeContent` on the client side, per record type: a selector with
+  several types normalises each candidate against the type of the entry it
+  is compared with. For non-text types the client string is tokenised with
+  the zone lexer and its decoded fields joined by one space, so
+  `0 issue "ca.example"` matches a CAA record whose `Content` is
+  `0 issue ca.example` (spec 6.3). Collapsing whitespace is the fallback
+  for strings that do not tokenise.
+- Placement never splits an owner's block: after the last anchor match the
+  insertion point moves past following records with the same owner. The
+  spec's examples are unaffected (their anchors match whole blocks); the
+  rule matters for the `Type` anchor, which otherwise would put a new host
+  between an existing host's A and AAAA.
+- `DefaultPlacement` encodes how the fixtures are laid out by hand: own
+  block, then same first label, then same parent, then same type. `Insert`
+  uses it; `Replace` keeps the explicit placement the spec's examples pin
+  down (a new name with no anchors goes to the end).
+- Carried comments (spec 2.7) are attached with `WithComments`, which joins
+  them into one trailing comment; the original texts remain as substrings,
+  which is what `Verify` checks.
+- `Result.Index` is the index in `Entries` after the operation, so callers
+  can look at what was inserted.
+- `Serial` reads the first SOA's third field; a non-numeric or overflowing
+  serial reports false rather than 0.
 
 ## Zone routing and reverse names (edit spec section 4)
 

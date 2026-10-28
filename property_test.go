@@ -4,13 +4,13 @@ package masterfile
 
 import (
 	"bytes"
-	"errors"
 	"fmt"
 	"math/rand/v2"
 	"strings"
 	"testing"
 
 	"github.com/miekg/dns"
+	"github.com/stretchr/testify/require"
 )
 
 // genZone builds a random but valid zone file from a fixed vocabulary.
@@ -63,41 +63,21 @@ func TestProperties(t *testing.T) {
 	r := rand.New(rand.NewPCG(1, 2))
 	for i := range 300 {
 		text := genZone(r)
-		f, err := Parse([]byte(text))
-		if err != nil {
-			t.Fatalf("#%d Parse: %v\n%s", i, err, text)
-		}
-		apex, _ := f.Origin("")
-		if err := f.ResolveOwners(apex); err != nil {
-			t.Fatalf("#%d ResolveOwners: %v\n%s", i, err, text)
-		}
+		f, err := Parse([]byte(text), "")
+		require.NoError(t, err, "#%d Parse\n%s", i, text)
+		apex := f.Apex()
 		var formatted, reformatted, plain, again bytes.Buffer
-		if err := Format(&formatted, apex, f.Entries, false); err != nil {
-			t.Fatalf("#%d Format: %v\n%s", i, err, text)
-		}
-		if err := Reformat([]byte(text), "", &reformatted, false); err != nil {
-			t.Fatalf("#%d Reformat: %v\n%s", i, err, text)
-		}
-		if !bytes.Equal(formatted.Bytes(), reformatted.Bytes()) {
-			t.Fatalf("#%d Reformat differs from Format:\n%s\n---\n%s", i, formatted.Bytes(), reformatted.Bytes())
-		}
-		if err := Reformat(formatted.Bytes(), "", &again, false); err != nil || !bytes.Equal(again.Bytes(), formatted.Bytes()) {
-			t.Fatalf("#%d not idempotent (%v):\n%s\n---\n%s", i, err, formatted.Bytes(), again.Bytes())
-		}
-		if err := WritePlain(&plain, apex, f.Entries); err != nil {
-			t.Fatal(err)
-		}
-		if err := Verify(apex, plain.Bytes(), formatted.Bytes()); err != nil {
-			t.Fatalf("#%d Verify: %v\n--- input ---\n%s--- plain ---\n%s--- formatted ---\n%s", i, err, text, plain.Bytes(), formatted.Bytes())
-		}
+		require.NoError(t, f.Format(&formatted, false), "#%d Format\n%s", i, text)
+		require.NoError(t, Reformat([]byte(text), "", &reformatted, false), "#%d Reformat\n%s", i, text)
+		require.Equal(t, formatted.String(), reformatted.String(), "#%d Reformat differs from Format", i)
+		require.NoError(t, Reformat(formatted.Bytes(), "", &again, false), "#%d Reformat of output\n%s", i, formatted.String())
+		require.Equal(t, formatted.String(), again.String(), "#%d not idempotent", i)
+		require.NoError(t, f.WritePlain(&plain), "#%d WritePlain\n%s", i, text)
+		require.NoError(t, Verify(apex, plain.Bytes(), formatted.Bytes()),
+			"#%d Verify\n--- input ---\n%s--- plain ---\n%s--- formatted ---\n%s", i, text, plain.String(), formatted.String())
 		// The formatted file parses to entries equal in meaning.
-		g, err := Parse(formatted.Bytes())
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := g.ResolveOwners(apex); err != nil {
-			t.Fatal(err)
-		}
+		g, err := Parse(formatted.Bytes(), "") // same hint as the first pass
+		require.NoError(t, err, "#%d Parse of formatted\n%s", i, formatted.String())
 		var ra, rb []Entry
 		for _, e := range f.Records() {
 			ra = append(ra, e)
@@ -105,13 +85,9 @@ func TestProperties(t *testing.T) {
 		for _, e := range g.Records() {
 			rb = append(rb, e)
 		}
-		if len(ra) != len(rb) {
-			t.Fatalf("#%d record count %d vs %d", i, len(ra), len(rb))
-		}
+		require.Len(t, rb, len(ra), "#%d record count", i)
 		for j := range ra {
-			if !ra[j].sameRecord(rb[j]) {
-				t.Fatalf("#%d record %d differs: %+v vs %+v", i, j, ra[j], rb[j])
-			}
+			require.True(t, ra[j].sameRecord(rb[j]), "#%d record %d differs: %+v vs %+v", i, j, ra[j], rb[j])
 		}
 	}
 }
@@ -130,22 +106,16 @@ func TestNewRecordProperty(t *testing.T) {
 		rtype := []uint16{dns.TypeA, dns.TypeTXT, dns.TypeMX, dns.TypeCAA}[r.IntN(4)]
 		e, err := NewRecord(owner, uint32(r.IntN(2))*300, rtype, rdata)
 		if err != nil {
-			if !errors.Is(err, ErrInvalidRecord) {
-				t.Fatalf("NewRecord(%q): %v", rdata, err)
-			}
+			require.ErrorIs(t, err, ErrInvalidRecord, "NewRecord(%q)", rdata)
 			continue
 		}
 		var plain bytes.Buffer
-		if err := WritePlain(&plain, "example.org.", []Entry{e}); err != nil {
-			t.Fatal(err)
-		}
-		f, err := Parse(plain.Bytes())
-		if err != nil {
-			t.Fatalf("NewRecord(%q) wrote unparseable %q: %v", rdata, plain.String(), err)
-		}
-		if len(f.Entries) != 1 || f.Entries[0].Kind() != Record || !f.Entries[0].Equal(e) {
-			t.Fatalf("NewRecord(%q) wrote %q which reads back as %+v", rdata, plain.String(), f.Entries)
-		}
+		require.NoError(t, writePlain(&plain, "example.org.", "example.org.", []Entry{e}), "NewRecord(%q)", rdata)
+		f, err := Parse(plain.Bytes(), "")
+		require.NoError(t, err, "NewRecord(%q) wrote unparseable %q", rdata, plain.String())
+		require.Len(t, f.Entries, 1, "NewRecord(%q) wrote %q which reads back as %+v", rdata, plain.String(), f.Entries)
+		require.Equal(t, Record, f.Entries[0].Kind(), "NewRecord(%q) wrote %q which reads back as %+v", rdata, plain.String(), f.Entries)
+		require.True(t, f.Entries[0].Equal(e), "NewRecord(%q) wrote %q which reads back as %+v", rdata, plain.String(), f.Entries)
 	}
 }
 
@@ -181,8 +151,18 @@ func hasBareTypeNameLine(formatted []byte) bool {
 
 func FuzzParse(f *testing.F) {
 	for _, seed := range []string{
-		"$ORIGIN example.org.\n$TTL 1h\n@ IN SOA ns host ( 2024090101 ; s\n 2h 30m 2w 1h )\nwww 300 IN A 192.0.2.1 ; c\n IN TXT ( \"a\" \"b\" )\n",
-		"a IN TXT \"\\065\\\"\"\n; c\n\n$INCLUDE x\n",
+		`$ORIGIN example.org.
+$TTL 1h
+@ IN SOA ns host ( 2024090101 ; s
+ 2h 30m 2w 1h )
+www 300 IN A 192.0.2.1 ; c
+ IN TXT ( "a" "b" )
+`,
+		`a IN TXT "\065\""
+; c
+
+$INCLUDE x
+`,
 		"@ IN DNSKEY 257 3 13 " + strings.Repeat("A", 120) + "\n",
 		")\n", "(\n", "\"", "\xEF\xBB\xBF", "a\rb", "a IN A 1\x00",
 	} {
@@ -196,26 +176,16 @@ func FuzzParse(f *testing.F) {
 			// refuses the write; there is no invariant to check.
 			t.Skip("malformed \\DDD escape")
 		}
-		zf, err := Parse(data)
+		zf, err := Parse(data, "")
 		if err != nil {
 			var pe *ParseError
-			if !errors.As(err, &pe) {
-				t.Fatalf("non-ParseError %v", err)
-			}
+			require.ErrorAs(t, err, &pe, "non-ParseError")
 			return
 		}
-		apex, _ := zf.Origin("")
-		if apex == "" {
-			apex = "."
-		}
-		if err := zf.ResolveOwners(apex); err != nil {
-			return
-		}
+		apex := zf.Apex()
 		var plain, formatted bytes.Buffer
-		if err := WritePlain(&plain, apex, zf.Entries); err != nil {
-			t.Fatal(err)
-		}
-		if err := Format(&formatted, apex, zf.Entries, false); err != nil {
+		require.NoError(t, zf.WritePlain(&plain), "WritePlain\n%q", data)
+		if err := zf.Format(&formatted, false); err != nil {
 			return // only an SOA with the wrong field count
 		}
 		if _, err := Records(apex, plain.Bytes()); err != nil {
@@ -228,12 +198,12 @@ func FuzzParse(f *testing.F) {
 			// Verify then refuses the write; see docs/DESIGN.md.
 			t.Skip("bare type-name field on its own line (reference parser quirk)")
 		}
-		if err := Verify(apex, plain.Bytes(), formatted.Bytes()); err != nil {
-			t.Fatalf("%v\n--- input ---\n%q\n--- plain ---\n%s--- formatted ---\n%s", err, data, plain.Bytes(), formatted.Bytes())
-		}
+		require.NoError(t, Verify(apex, plain.Bytes(), formatted.Bytes()),
+			"Verify\n--- input ---\n%q\n--- plain ---\n%s--- formatted ---\n%s", data, plain.String(), formatted.String())
 		var again bytes.Buffer
-		if err := Reformat(formatted.Bytes(), apex, &again, false); err != nil || !bytes.Equal(again.Bytes(), formatted.Bytes()) {
-			t.Fatalf("not idempotent (%v):\n%s\n---\n%s", err, formatted.Bytes(), again.Bytes())
-		}
+		require.NoError(t, Reformat(formatted.Bytes(), "", &again, false), "Reformat of output\n%s", formatted.String())
+		require.Equal(t, formatted.String(), again.String(), "not idempotent")
 	})
 }
+
+func newRand(a, b uint64) *rand.Rand { return rand.New(rand.NewPCG(a, b)) }

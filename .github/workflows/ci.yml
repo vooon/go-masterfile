@@ -29,6 +29,9 @@ jobs:
       - run: go build ./...
       - run: go mod tidy -diff
       - name: test (race, coverage)
+        # The race detector needs cgo; the package itself builds with CGO_ENABLED=0 above.
+        env:
+          CGO_ENABLED: "1"
         run: go test -race -shuffle=on -coverprofile=coverage.out ./...
       - name: coverage gate (90%)
         run: |

@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.1](https://github.com/vooon/go-masterfile/compare/v0.2.0...v0.2.1) (2026-10-28)
+
+
+### Bug Fixes
+
+* ASCII-only case folding, one-line comments, leaner lexer and operations ([9101e91](https://github.com/vooon/go-masterfile/commit/9101e912a7882fcd7880c485f7a8db37a8d1948d))
+* ASCII-only case folding, one-line comments, leaner lexer and operations ([8b57b5f](https://github.com/vooon/go-masterfile/commit/8b57b5f4ebf7f9ea2dff2bd3a07d25cde095bf00))
+
 ## [0.2.0](https://github.com/vooon/go-masterfile/compare/v0.1.0...v0.2.0) (2026-10-28)
 
 

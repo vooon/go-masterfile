@@ -31,7 +31,7 @@ hand and that a name server (BIND, Knot, CoreDNS) then loads:
 - **Apply** runs patch-style operations atomically: `Replace`, `Insert`,
   `Delete`, `DeleteOwner`, `AddRemove` and `Collapse` edit RRsets in place,
   put new records where a human would (next to the owner's block, the
-  `_acme-challenge.*` group, the siblings, the same type) and carry the
+  `_acme-challenge.*` group, the siblings, the same type for hosts) and carry the
   comments of what they replace. `Select`, `Owners`, `RRSets`, `Serial`
   and `SOA` query; `Check` says whether a file is serveable on its own.
 - **Commit** renders only when something changed, through the

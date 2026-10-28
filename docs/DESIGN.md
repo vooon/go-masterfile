@@ -157,7 +157,10 @@ and where behaviour was pinned down.
 - `DefaultPlacement` encodes how the fixtures are laid out by hand: own
   block, then same first label, then same parent, then same type. `Insert`
   uses it; `Replace` keeps the explicit placement the spec's examples pin
-  down (a new name with no anchors goes to the end).
+  down (a new name with no anchors goes to the end). Underscore-led owners
+  (RFC 8552 attribute leaves) skip the type anchor: in zoneomatic's Mox
+  sample zone the first `_acme-challenge` TXT otherwise landed after the
+  TLS-RPT TXT, inside that record's commented section.
 - Carried comments (spec 2.7) are attached with `WithComments`, which joins
   them into one trailing comment; the original texts remain as substrings,
   which is what `Verify` checks. `WithComments` is exported and has no

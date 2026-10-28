@@ -146,14 +146,24 @@ exposes this.
   origin; with no origin known, a relative name is taken as absolute (this is
   what the reference parser does).
 - The **apex** of a file is the owner of the first SOA record, resolved as
-  above. `Origin(hint string) (apex string, soa *Record)` returns it, or,
-  with no SOA, the first `$ORIGIN`, else the hint, with a nil record. A bare
-  `@` SOA owner with no origin at all yields an empty apex.
+  above with the `apex` argument of `Parse` as the origin in force before
+  any `$ORIGIN`. Without an SOA (or with one whose owner cannot be
+  determined) the apex is that argument, else the first `$ORIGIN`, else the
+  root `.`. A non-empty argument is also an assertion: when the SOA names a
+  different zone, `Parse` fails with `ErrApexMismatch`. `Parse` accepts a
+  file without an origin or without an SOA, so `$INCLUDE` fragments parse
+  and format like any other; `(*Zone).Check()` is the gate for files that
+  are served on their own: `ErrNoOrigin` when only the root fallback
+  applied, `ErrNoSOA` when there is no SOA.
 
 ### 4.2 Owner resolution
 
-`ResolveOwners(apex string) error` rewrites every record so that its owner is
-explicit and **relative to the apex**: `@` for the apex, `www` for
+`Parse` resolves every name against the origin in force: the `apex`
+argument before any `$ORIGIN` line, or, with none, the root (a relative
+name is then taken as absolute). The apex found (4.1) is not itself used to
+resolve names, so a file without origin is never reinterpreted; it only
+decides what the resolved owners are relative to. `Parse` rewrites every
+record so that its owner is explicit and **relative to the apex**: `@` for the apex, `www` for
 `www.<apex>`, and the absolute name for names outside the apex. Inherited
 (blank) owners are filled from the previous record; a record with nothing to
 inherit is left ownerless. After this, an entry's meaning does not depend on
@@ -172,8 +182,8 @@ bytes compare exactly.
   values, and same explicit TTL or both absent); comments are ignored.
 - `EntriesEqual(a, b []Entry) bool` compares lists by meaning: same length,
   pairwise `Equal` ignoring TTL, and equal effective TTLs (both unknown is
-  equal; known vs unknown is not). This is what decides whether an edit
-  changed anything.
+  equal; known vs unknown is not). The editing operations use it to set
+  `Zone.Changed`.
 
 ### 4.4 Values
 
@@ -186,10 +196,13 @@ bytes compare exactly.
 ## 5. Data model
 
 ```go
-type File struct {
-    Entries []Entry
-    // trailing bytes that formed no entry are dropped; nothing else is kept
+type Zone struct {
+    Entries []Entry // in file order; trailing bytes that formed no entry are dropped
+    Changed bool    // set by the editing operations, or by hand after editing Entries
+    // the apex is unexported: Apex() returns it; Parse and New set it
 }
+
+func New(apex string) *Zone // an empty zone, for files built from nothing
 
 type Kind int // Blank, Comment, Directive, Record
 
@@ -231,8 +244,8 @@ surprises: mutating a copy must not change the original.
 
 ### 6.1 Parse
 
-`Parse(data []byte) (*File, error)`; errors are `*ParseError{Line, Col,
-Msg}` with `Error()` as `"line L: msg"`. Parsing never panics on any input
+`Parse(data []byte, apex string) (*Zone, error)` (apex per 4.1; owners
+resolved per 4.2); syntax errors are `*ParseError{Line, Col, Msg}` with `Error()` as `"line L: msg"`. Parsing never panics on any input
 (fuzz-tested). Parsing is a plain function over bytes: no goroutines, no
 channels.
 
@@ -268,6 +281,13 @@ meaning no explicit TTL. It must not render text and parse it back. Rules:
 This is a security boundary: values arrive from HTTP and DNS UPDATE clients,
 and a value must never add a second record, a directive or a comment.
 
+`NewDirective(name string, args ...string) (Entry, error)` and
+`NewComment(text string) (Entry, error)` build the other entry kinds with
+the same guarantee: each directive argument must tokenise as exactly one
+item or quoted string, a comment must hold no line terminator or NUL, so
+neither can add a second entry. Errors wrap `ErrInvalidEntry`. The zero
+`Entry` is a blank line.
+
 ### 6.4 Quoting and escaping
 
 `Quote(s string) string` renders a raw string as a zone file quoted string:
@@ -278,12 +298,11 @@ suitable (zone parsers do not know `\n`, `\x`, `\u`).
 
 ### 6.5 Formatting
 
-`Format(w io.Writer, apex string, entries []Entry, bumpSerial bool) error`
-writes entries whose owners have been resolved (4.2) in the canonical layout.
-`Reformat(data []byte, originHint string, w io.Writer, bumpSerial bool)
-error` is Parse, Origin, ResolveOwners, Format in one call (the formatter
-command and tests use it; an empty apex falls back to `.`). Write errors are
-returned (first error wins), never ignored.
+`(*Zone).Format(w io.Writer, bumpSerial bool) error` writes the zone in the
+canonical layout. `Reformat(data []byte, apex string, w io.Writer,
+bumpSerial bool) error` is `Parse` and `Format` in one call (the formatter
+command and tests use it). Write errors are returned (first error wins),
+never ignored.
 
 Layout rules, all of which the examples in section 8 exercise:
 
@@ -360,8 +379,8 @@ and formatting the file text (Reformat) produce identical bytes.
 
 ### 6.7 Plain writer
 
-`WritePlain(w io.Writer, apex string, entries []Entry) error` writes the same
-entries without alignment: one field-separating space, owners relative to the
+`(*Zone).WritePlain(w io.Writer) error` writes the same zone without
+alignment: one field-separating space, owners relative to the
 current `$ORIGIN`, raw values, multi-line only when a comment position
 requires it, comments in place. It is deliberately simple and is the
 reference that `Verify` checks `Format` against. Its exact spacing is not
@@ -401,20 +420,20 @@ zoneomatic's.
 
 | Function | Purpose |
 |---|---|
-| `Parse(data) (*File, error)` | 6.1 |
-| `(*File).Origin(hint) (string, *Entry)` | 4.1 |
-| `(*File).ResolveOwners(apex) error` | 4.2 |
+| `Parse(data, apex) (*Zone, error)`, `New(apex) *Zone` | 6.1, 5 |
+| `(*Zone).Apex`, `SOA`, `Serial`, `Records`, `Check` | 4.1 |
 | `NewRecord(owner, ttl, rtype, rdata) (Entry, error)` | 6.3 |
+| `NewDirective(name, args...)`, `NewComment(text)` | 6.3 |
 | `(Entry).Equal(Entry) bool`, `EntriesEqual(a, b) bool` | 4.3 |
 | `(Entry).Values/RawValues/Content/Comments` | 4.4 |
-| `Format`, `Reformat` | 6.5 |
-| `WritePlain` | 6.7 |
+| `(*Zone).Format`, `Reformat` | 6.5 |
+| `(*Zone).WritePlain`, `(*Zone).Commit` | 6.7, edit spec 2.2 |
 | `Verify`, `Records`, `Comments` | 6.8 |
 | `Fqdn`, `NameEqual`, `Relative`, `Absolute` | 6.2 |
 | `StringToTTL` | 3.4 |
 | `Quote` | 6.4 |
 | `Increase`, `UserComment` | 6.6 |
-| `ErrInvalidRecord`, `ErrUnsafeWrite`, `*ParseError` | errors |
+| `ErrInvalidRecord`, `ErrInvalidEntry`, `ErrApexMismatch`, `ErrNoOrigin`, `ErrNoSOA`, `ErrUnsafeWrite`, `*ParseError` | errors |
 
 ## 8. Examples (normative)
 
@@ -605,9 +624,8 @@ x` (double TTL); `a IN IN A x` (double class).
 
 - Unit tests for every section 8 example, byte-exact.
 - Property tests (`testing/quick` or hand-rolled loops) on generated zones:
-  `Format` is idempotent; `Reformat(text)` equals `Format(ResolveOwners
-  (Parse(text)))`; `Verify(apex, WritePlain(e), Format(e))` passes for every
-  parsed file; `NewRecord` output parses back to an entry `Equal` to itself.
+  `Format` is idempotent; `Reformat(text)` equals `Parse(text).Format()`;
+  `Verify(apex, z.WritePlain(), z.Format())` passes for every parsed file; `NewRecord` output parses back to an entry `Equal` to itself.
 - A `FuzzParse` target: `Parse` never panics; when it succeeds, `Format`
   succeeds and `Verify` passes for inputs the reference parser accepts.
 - Golden files under `testdata/` for `Reformat`: input and expected output

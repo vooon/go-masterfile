@@ -4,19 +4,18 @@ package masterfile
 
 import (
 	"bytes"
-	"errors"
 	"strings"
 	"testing"
 
 	"github.com/miekg/dns"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func plainOf(t *testing.T, e Entry) string {
 	t.Helper()
 	var b bytes.Buffer
-	if err := WritePlain(&b, "example.org.", []Entry{e}); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, writePlain(&b, "example.org.", "example.org.", []Entry{e}))
 	return strings.TrimSuffix(b.String(), "\n")
 }
 
@@ -39,25 +38,17 @@ func TestNewRecord(t *testing.T) {
 		{"txt", 0, dns.TypeSPF, "v=spf1 -all", `txt IN SPF "v=spf1 -all"`},
 	} {
 		e, err := NewRecord(tc.owner, tc.ttl, tc.rtype, tc.rdata)
-		if err != nil {
-			t.Errorf("NewRecord(%q, %d, %d, %q): %v", tc.owner, tc.ttl, tc.rtype, tc.rdata, err)
+		if !assert.NoError(t, err, "NewRecord(%q, %d, %d, %q)", tc.owner, tc.ttl, tc.rtype, tc.rdata) {
 			continue
 		}
-		if got := plainOf(t, e); got != tc.want {
-			t.Errorf("NewRecord(%q, %d, %d, %q) = %q, want %q", tc.owner, tc.ttl, tc.rtype, tc.rdata, got, tc.want)
-		}
+		assert.Equal(t, tc.want, plainOf(t, e), "NewRecord(%q, %d, %d, %q)", tc.owner, tc.ttl, tc.rtype, tc.rdata)
 		// Round trip: the plain rendering parses back to an equal entry.
-		f, err := Parse([]byte(plainOf(t, e) + "\n"))
-		if err != nil {
-			t.Errorf("parse back %q: %v", tc.want, err)
+		f, err := Parse([]byte(plainOf(t, e)+"\n"), "")
+		if !assert.NoError(t, err, "parse back %q", tc.want) {
 			continue
 		}
-		if !f.Entries[0].Equal(e) {
-			t.Errorf("round trip of %q is not Equal", tc.want)
-		}
-		if e.Content() == "" {
-			t.Errorf("%q: empty Content", tc.want)
-		}
+		assert.True(t, f.Entries[0].Equal(e), "round trip of %q is not Equal", tc.want)
+		assert.NotEmpty(t, e.Content(), "%q: empty Content", tc.want)
 	}
 	for _, tc := range []struct {
 		owner string
@@ -86,73 +77,78 @@ func TestNewRecord(t *testing.T) {
 		{"www", 65280, "192.0.2.1"},
 	} {
 		_, err := NewRecord(tc.owner, 0, tc.rtype, tc.rdata)
-		if !errors.Is(err, ErrInvalidRecord) {
-			t.Errorf("NewRecord(%q, %d, %q) = %v, want ErrInvalidRecord", tc.owner, tc.rtype, tc.rdata, err)
-		}
+		assert.ErrorIs(t, err, ErrInvalidRecord, "NewRecord(%q, %d, %q)", tc.owner, tc.rtype, tc.rdata)
 	}
 }
 
 func parseEntries(t *testing.T, text string) []Entry {
 	t.Helper()
-	f, err := Parse([]byte(text))
-	if err != nil {
-		t.Fatalf("Parse(%q): %v", text, err)
-	}
+	f, err := Parse([]byte(text), "")
+	require.NoError(t, err, "Parse(%q)", text)
 	return f.Entries
 }
 
 // Spec 8.6.
 func TestEquality(t *testing.T) {
-	a := parseEntries(t, "$TTL 60\nwww IN A 192.0.2.1\n")
-	b := parseEntries(t, "$TTL 60\nwww 60 IN A 192.0.2.1\n")
-	c := parseEntries(t, "$TTL 60\nwww 1M IN A 192.0.2.1\n")
-	d := parseEntries(t, "$TTL 60\nwww 120 IN A 192.0.2.1\n")
-	e := parseEntries(t, "$TTL 120\nwww IN A 192.0.2.1\n")
-	if !EntriesEqual(a, b) || !EntriesEqual(a, c) || !EntriesEqual(b, c) {
-		t.Error("a, b, c must be EntriesEqual")
-	}
-	if a[1].Equal(b[1]) || a[1].Equal(c[1]) {
-		t.Error("implicit and explicit TTL must not be Entry.Equal")
-	}
-	if !b[1].Equal(c[1]) {
-		t.Error("60 and 1M must be Entry.Equal")
-	}
-	if EntriesEqual(a, d) || EntriesEqual(b, d) || EntriesEqual(a, e) {
-		t.Error("different TTLs must not be EntriesEqual")
-	}
-	x := parseEntries(t, "www 60 IN A 192.0.2.1\n")
-	y := parseEntries(t, "www IN A 192.0.2.1\n")
-	if EntriesEqual(x, y) {
-		t.Error("known vs unknown effective TTL must differ")
-	}
-	if !EntriesEqual(y, parseEntries(t, "WWW A 192.0.2.1\n")) {
-		t.Error("case and implicit class must not matter")
-	}
-	if EntriesEqual(y, parseEntries(t, "www IN A 192.0.2.1\n\n")) {
-		t.Error("different lengths must differ")
-	}
-	if EntriesEqual(parseEntries(t, "; a\n"), parseEntries(t, "; b\n")) {
-		t.Error("different comments must differ")
-	}
-	if EntriesEqual(parseEntries(t, "$ORIGIN a.\n"), parseEntries(t, "$ORIGIN b.\n")) {
-		t.Error("different directives must differ")
-	}
-	if EntriesEqual(parseEntries(t, "\n"), parseEntries(t, "; c\n")) {
-		t.Error("different kinds must differ")
-	}
-	if !EntriesEqual(parseEntries(t, "\n; c\n$TTL 1h\n"), parseEntries(t, "\n; c\n$TTL 3600\n")) {
-		t.Error("equal non-records must be equal")
-	}
-	txt := parseEntries(t, `t IN TXT "a b"`+"\n")
-	if !txt[0].Equal(parseEntries(t, `t TXT a\ b`+"\n")[0]) {
-		t.Error("decoded values must compare equal regardless of quoting")
-	}
-	if txt[0].Equal(parseEntries(t, `t IN TXT "a c"`+"\n")[0]) || txt[0].Equal(parseEntries(t, `t IN SPF "a b"`+"\n")[0]) {
-		t.Error("different values or types must differ")
-	}
-	if txt[0].Equal(parseEntries(t, `t CH TXT "a b"`+"\n")[0]) {
-		t.Error("different classes must differ")
-	}
+	a := parseEntries(t, `$TTL 60
+www IN A 192.0.2.1
+`)
+	b := parseEntries(t, `$TTL 60
+www 60 IN A 192.0.2.1
+`)
+	c := parseEntries(t, `$TTL 60
+www 1M IN A 192.0.2.1
+`)
+	d := parseEntries(t, `$TTL 60
+www 120 IN A 192.0.2.1
+`)
+	e := parseEntries(t, `$TTL 120
+www IN A 192.0.2.1
+`)
+	assert.True(t, EntriesEqual(a, b), "a, b, c must be EntriesEqual")
+	assert.True(t, EntriesEqual(a, c), "a, b, c must be EntriesEqual")
+	assert.True(t, EntriesEqual(b, c), "a, b, c must be EntriesEqual")
+	assert.False(t, a[1].Equal(b[1]), "implicit and explicit TTL must not be Entry.Equal")
+	assert.False(t, a[1].Equal(c[1]), "implicit and explicit TTL must not be Entry.Equal")
+	assert.True(t, b[1].Equal(c[1]), "60 and 1M must be Entry.Equal")
+	assert.False(t, EntriesEqual(a, d), "different TTLs must not be EntriesEqual")
+	assert.False(t, EntriesEqual(b, d), "different TTLs must not be EntriesEqual")
+	assert.False(t, EntriesEqual(a, e), "different TTLs must not be EntriesEqual")
+	x := parseEntries(t, `www 60 IN A 192.0.2.1
+`)
+	y := parseEntries(t, `www IN A 192.0.2.1
+`)
+	assert.False(t, EntriesEqual(x, y), "known vs unknown effective TTL must differ")
+	assert.True(t, EntriesEqual(y, parseEntries(t, `WWW A 192.0.2.1
+`)), "case and implicit class must not matter")
+	assert.False(t, EntriesEqual(y, parseEntries(t, `www IN A 192.0.2.1
+
+`)), "different lengths must differ")
+	assert.False(t, EntriesEqual(parseEntries(t, `; a
+`), parseEntries(t, `; b
+`)), "different comments must differ")
+	assert.False(t, EntriesEqual(parseEntries(t, `$ORIGIN a.
+`), parseEntries(t, `$ORIGIN b.
+`)), "different directives must differ")
+	assert.False(t, EntriesEqual(parseEntries(t, "\n"), parseEntries(t, `; c
+`)), "different kinds must differ")
+	assert.True(t, EntriesEqual(parseEntries(t, `
+; c
+$TTL 1h
+`), parseEntries(t, `
+; c
+$TTL 3600
+`)), "equal non-records must be equal")
+	txt := parseEntries(t, `t IN TXT "a b"
+`)
+	assert.True(t, txt[0].Equal(parseEntries(t, `t TXT a\ b
+`)[0]), "decoded values must compare equal regardless of quoting")
+	assert.False(t, txt[0].Equal(parseEntries(t, `t IN TXT "a c"
+`)[0]), "different values must differ")
+	assert.False(t, txt[0].Equal(parseEntries(t, `t IN SPF "a b"
+`)[0]), "different types must differ")
+	assert.False(t, txt[0].Equal(parseEntries(t, `t CH TXT "a b"
+`)[0]), "different classes must differ")
 }
 
 // Spec 8.7.
@@ -174,9 +170,7 @@ func TestNames(t *testing.T) {
 		{"a..", ".", "a.."},
 		{"www.example.org.", "example.org", "www"},
 	} {
-		if got := Relative(tc.name, tc.origin); got != tc.want {
-			t.Errorf("Relative(%q, %q) = %q, want %q", tc.name, tc.origin, got, tc.want)
-		}
+		assert.Equal(t, tc.want, Relative(tc.name, tc.origin), "Relative(%q, %q)", tc.name, tc.origin)
 	}
 	for _, tc := range []struct{ name, origin, want string }{
 		{"www", "example.org.", "www.example.org."},
@@ -188,71 +182,121 @@ func TestNames(t *testing.T) {
 		{"www", ".", "www."},
 		{`a\.`, "example.org.", `a\..example.org.`},
 	} {
-		if got := Absolute(tc.name, tc.origin); got != tc.want {
-			t.Errorf("Absolute(%q, %q) = %q, want %q", tc.name, tc.origin, got, tc.want)
-		}
+		assert.Equal(t, tc.want, Absolute(tc.name, tc.origin), "Absolute(%q, %q)", tc.name, tc.origin)
 	}
-	if Fqdn("a") != "a." || Fqdn("a.") != "a." || Fqdn("") != "." || Fqdn(`a\.`) != `a\..` {
-		t.Error("Fqdn")
-	}
-	if !NameEqual("WwW", "www") || NameEqual("www", "www.") || NameEqual("é", "É") {
-		t.Error("NameEqual")
-	}
+	assert.Equal(t, "a.", Fqdn("a"))
+	assert.Equal(t, "a.", Fqdn("a."))
+	assert.Equal(t, ".", Fqdn(""))
+	assert.Equal(t, `a\..`, Fqdn(`a\.`))
+	assert.True(t, NameEqual("WwW", "www"))
+	assert.False(t, NameEqual("www", "www."))
+	assert.False(t, NameEqual("é", "É"))
 }
 
-func TestOrigin(t *testing.T) {
-	for _, tc := range []struct{ text, hint, apex string }{
-		{"$ORIGIN example.org.\n@ IN SOA a b 1 2 3 4 5\n", "", "example.org."},
-		{"example.org. IN SOA a b 1 2 3 4 5\n", "", "example.org."},
-		{"@ IN SOA a b 1 2 3 4 5\n", "example.org", "example.org."},
-		{"$ORIGIN example.org.\nsub IN SOA a b 1 2 3 4 5\n", "", "sub.example.org."},
-		{"$ORIGIN example.org.\nwww IN A 192.0.2.1\n", "", "example.org."},
-		{"www IN A 192.0.2.1\n", "", ""},
-		{"@ IN SOA a b 1 2 3 4 5\n", "", ""},
-		{"www IN A 192.0.2.1\n", "example.org", "example.org."},
-		{"$ORIGIN example.org.\nwww IN A 192.0.2.1\n IN SOA a b 1 2 3 4 5\n", "", "www.example.org."},
-		{"$ORIGIN example.org.\n IN SOA a b 1 2 3 4 5\n", "", ""},
+func TestParseApex(t *testing.T) {
+	for _, tc := range []struct {
+		text, hint, apex string
+		soa, complete    bool
+	}{
+		{`$ORIGIN example.org.
+@ IN SOA a b 1 2 3 4 5
+`, "", "example.org.", true, true},
+		{`example.org. IN SOA a b 1 2 3 4 5
+`, "", "example.org.", true, true},
+		{`@ IN SOA a b 1 2 3 4 5
+`, "example.org", "example.org.", true, true},
+		{`$ORIGIN example.org.
+sub IN SOA a b 1 2 3 4 5
+`, "", "sub.example.org.", true, true},
+		{`$ORIGIN example.org.
+www IN A 192.0.2.1
+`, "", "example.org.", false, false},
+		{`www IN A 192.0.2.1
+`, "", ".", false, false},
+		{`@ IN SOA a b 1 2 3 4 5
+`, "", ".", true, false},
+		{`www IN A 192.0.2.1
+`, "example.org", "example.org.", false, false},
+		{`$ORIGIN example.org.
+www IN A 192.0.2.1
+ IN SOA a b 1 2 3 4 5
+`, "", "www.example.org.", true, true},
+		{`$ORIGIN example.org.
+ IN SOA a b 1 2 3 4 5
+`, "", "example.org.", true, true},
+		{`$ORIGIN sub.example.org.
+www IN A 192.0.2.1
+`, "example.org", "example.org.", false, false},
+		{`$ORIGIN example.org.
+ IN SOA a b 1 2 3 4 5
+`, "other.org", "other.org.", true, true},
+		{"", "", ".", false, false},
 	} {
-		f := &File{Entries: parseEntries(t, tc.text)}
-		apex, soa := f.Origin(tc.hint)
-		if apex != tc.apex {
-			t.Errorf("Origin(%q, hint %q) = %q, want %q", tc.text, tc.hint, apex, tc.apex)
+		z, err := Parse([]byte(tc.text), tc.hint)
+		require.NoError(t, err, "Parse(%q, %q)", tc.text, tc.hint)
+		assert.Equal(t, tc.apex, z.Apex(), "Parse(%q, %q).Apex()", tc.text, tc.hint)
+		soa, ok := z.SOA()
+		assert.Equal(t, tc.soa, ok, "Parse(%q): SOA() = %v, %v", tc.text, soa, ok)
+		if ok {
+			assert.Equal(t, "SOA", soa.Type(), "Parse(%q): SOA() = %v, %v", tc.text, soa, ok)
 		}
-		if hasSOA := strings.Contains(tc.text, "SOA"); (soa != nil) != hasSOA || (soa != nil && soa.Type() != "SOA") {
-			t.Errorf("Origin(%q): soa = %v", tc.text, soa)
+		if err := z.Check(); tc.complete {
+			assert.NoError(t, err, "Parse(%q, %q).Check()", tc.text, tc.hint)
+		} else {
+			assert.Error(t, err, "Parse(%q, %q).Check()", tc.text, tc.hint)
 		}
 	}
+	for _, text := range []string{`$ORIGIN a.
+@ IN SOA ns host 1 2 3 4 5
+`, `b. IN SOA ns host 1 2 3 4 5
+`, `$ORIGIN x.
+@ IN SOA ns host 1 2 3 4 5
+`} {
+		_, err := Parse([]byte(text), "sub.a.")
+		assert.ErrorIs(t, err, ErrApexMismatch, "Parse(%q, sub.a.)", text)
+	}
+	assert.ErrorIs(t, New("").Check(), ErrNoOrigin, `New("").Check()`)
+	assert.ErrorIs(t, New("example.org").Check(), ErrNoSOA, "New(example.org).Check()")
+	z := New("example.org")
+	assert.Equal(t, "example.org.", z.Apex(), "New = %+v", z)
+	assert.False(t, z.Changed, "New = %+v", z)
+	assert.Empty(t, z.Entries, "New = %+v", z)
 }
 
 func TestResolveOwners(t *testing.T) {
-	f := &File{Entries: parseEntries(t, "$ORIGIN example.org.\n@ IN SOA a b 1 2 3 4 5\n IN NS ns\nwww IN A 192.0.2.1\n IN AAAA 2001:db8::1\nother.org. IN A 192.0.2.2\n$ORIGIN sub.example.org.\nhost IN A 192.0.2.3\n")}
-	if err := f.ResolveOwners("example.org."); err != nil {
-		t.Fatal(err)
-	}
+	f, err := Parse([]byte(`$ORIGIN example.org.
+@ IN SOA a b 1 2 3 4 5
+ IN NS ns
+www IN A 192.0.2.1
+ IN AAAA 2001:db8::1
+other.org. IN A 192.0.2.2
+$ORIGIN sub.example.org.
+host IN A 192.0.2.3
+`), "example.org.")
+	require.NoError(t, err)
 	var owners []string
 	for _, e := range f.Records() {
 		owners = append(owners, e.Owner())
 	}
-	if got, want := strings.Join(owners, " "), "@ @ www www other.org. host.sub"; got != want {
-		t.Errorf("owners = %q, want %q", got, want)
-	}
-	g := &File{Entries: parseEntries(t, " IN A 192.0.2.1\nwww IN A 192.0.2.2\n")}
-	if err := g.ResolveOwners("example.org."); err != nil || g.Entries[0].Owner() != "" || g.Entries[1].Owner() != "www" {
-		t.Errorf("ownerless first record: %v %q", err, g.Entries[0].Owner())
-	}
-	h := &File{Entries: parseEntries(t, "@ IN A 192.0.2.1\n")}
-	if err := h.ResolveOwners(""); err == nil {
-		t.Error("@ without origin must fail")
-	}
+	assert.Equal(t, "@ @ www www other.org. host.sub", strings.Join(owners, " "), "owners")
+	g, err := Parse([]byte(` IN A 192.0.2.1
+www IN A 192.0.2.2
+`), "example.org.")
+	require.NoError(t, err, "ownerless first record")
+	assert.Empty(t, g.Entries[0].Owner(), "ownerless first record")
+	assert.Equal(t, "www", g.Entries[1].Owner(), "ownerless first record")
+	h, err := Parse([]byte(`@ IN A 192.0.2.1
+`), "")
+	require.NoError(t, err, "@ without origin")
+	assert.Equal(t, ".", h.Apex(), "@ without origin: %+v", h)
+	assert.Equal(t, "@", h.Entries[0].Owner(), "@ without origin: %+v", h)
 	// Stop the iterator early.
 	n := 0
 	for range f.Records() {
 		n++
 		break
 	}
-	if n != 1 {
-		t.Error("Records iterator did not stop")
-	}
+	assert.Equal(t, 1, n, "Records iterator did not stop")
 }
 
 func TestStringToTTL(t *testing.T) {
@@ -267,9 +311,8 @@ func TestStringToTTL(t *testing.T) {
 		{"-1", 0, false}, {"99999999w", 0, false}, {"1 h", 0, false},
 	} {
 		got, ok := StringToTTL(tc.in)
-		if got != tc.want || ok != tc.ok {
-			t.Errorf("StringToTTL(%q) = %d, %v; want %d, %v", tc.in, got, ok, tc.want, tc.ok)
-		}
+		assert.Equal(t, tc.want, got, "StringToTTL(%q)", tc.in)
+		assert.Equal(t, tc.ok, ok, "StringToTTL(%q)", tc.in)
 	}
 }
 
@@ -283,143 +326,161 @@ func TestQuote(t *testing.T) {
 		{"ünïcödé \xff", "\"ünïcödé \xff\""},
 	} {
 		got := Quote(tc.in)
-		if got != tc.want {
-			t.Errorf("Quote(%q) = %q, want %q", tc.in, got, tc.want)
-		}
-		f, err := Parse([]byte("t IN TXT " + got + "\n"))
-		if err != nil || f.Entries[0].Values()[0] != tc.in {
-			t.Errorf("Quote(%q) does not read back: %v", tc.in, err)
+		assert.Equal(t, tc.want, got, "Quote(%q)", tc.in)
+		f, err := Parse([]byte("t IN TXT "+got+"\n"), "")
+		if assert.NoError(t, err, "Quote(%q) does not read back", tc.in) {
+			assert.Equal(t, tc.in, f.Entries[0].Values()[0], "Quote(%q) does not read back", tc.in)
 		}
 	}
 }
 
 func TestEntryAccessors(t *testing.T) {
-	es := parseEntries(t, "; top\n\n$TTL 1h ; default\nwww 300 IN TXT ( ; head\n \"a\" ; one\n \"b\" ) ; end\n")
-	if len(es) != 4 || es[0].Kind() != Comment || es[1].Kind() != Blank || es[2].Kind() != Directive || es[3].Kind() != Record {
-		t.Fatalf("kinds: %v", es)
-	}
-	if es[0].Comment() != "; top" || es[0].Line() != 1 || Kind(9).String() != "kind(9)" || Record.String() != "record" {
-		t.Error("comment entry")
-	}
-	if d := es[2]; d.Name() != "$TTL" || d.Args()[0].Raw != "1h" || strings.Join(d.Comments(), ",") != "; default" || d.RawValues()[0] != "1h" || d.Line() != 3 {
-		t.Errorf("directive entry: %+v", d)
-	}
+	es := parseEntries(t, `; top
+
+$TTL 1h ; default
+www 300 IN TXT ( ; head
+ "a" ; one
+ "b" ) ; end
+`)
+	require.Len(t, es, 4, "kinds: %v", es)
+	require.Equal(t, Comment, es[0].Kind(), "kinds: %v", es)
+	require.Equal(t, Blank, es[1].Kind(), "kinds: %v", es)
+	require.Equal(t, Directive, es[2].Kind(), "kinds: %v", es)
+	require.Equal(t, Record, es[3].Kind(), "kinds: %v", es)
+	assert.Equal(t, "; top", es[0].Comment(), "comment entry")
+	assert.Equal(t, 1, es[0].Line(), "comment entry")
+	assert.Equal(t, "kind(9)", Kind(9).String())
+	assert.Equal(t, "record", Record.String())
+	d := es[2]
+	assert.Equal(t, "$TTL", d.Name(), "directive entry: %+v", d)
+	assert.Equal(t, "1h", d.Args()[0].Raw, "directive entry: %+v", d)
+	assert.Equal(t, "; default", strings.Join(d.Comments(), ","), "directive entry: %+v", d)
+	assert.Equal(t, "1h", d.RawValues()[0], "directive entry: %+v", d)
+	assert.Equal(t, 3, d.Line(), "directive entry: %+v", d)
 	r := es[3]
 	ttl, ok := r.TTL()
-	if r.Owner() != "www" || !ok || ttl.Seconds != 300 || ttl.Raw != "300" || r.Class() != "IN" || r.Type() != "TXT" || r.RType() != dns.TypeTXT || r.Line() != 4 {
-		t.Errorf("record header: %+v", r)
-	}
-	if got := strings.Join(r.Comments(), ","); got != "; head,; one,; end" {
-		t.Errorf("comments = %q", got)
-	}
-	if got := strings.Join(r.Head(), ","); got != "; head" {
-		t.Errorf("head = %q", got)
-	}
-	if got := strings.Join(r.Tail(), ","); got != "; end" {
-		t.Errorf("tail = %q", got)
-	}
+	assert.Equal(t, "www", r.Owner(), "record header: %+v", r)
+	assert.True(t, ok, "record header: %+v", r)
+	assert.Equal(t, uint32(300), ttl.Seconds, "record header: %+v", r)
+	assert.Equal(t, "300", ttl.Raw, "record header: %+v", r)
+	assert.Equal(t, "IN", r.Class(), "record header: %+v", r)
+	assert.Equal(t, "TXT", r.Type(), "record header: %+v", r)
+	assert.Equal(t, dns.TypeTXT, r.RType(), "record header: %+v", r)
+	assert.Equal(t, 4, r.Line(), "record header: %+v", r)
+	assert.Equal(t, "; head,; one,; end", strings.Join(r.Comments(), ","), "comments")
+	assert.Equal(t, "; head", strings.Join(r.Head(), ","), "head")
+	assert.Equal(t, "; end", strings.Join(r.Tail(), ","), "tail")
 	fs := r.Fields()
-	if len(fs) != 2 || !fs[0].Quoted || fs[0].Comments[0] != "; one" || fs[1].Comments != nil {
-		t.Errorf("fields = %+v", fs)
-	}
+	require.Len(t, fs, 2, "fields = %+v", fs)
+	assert.True(t, fs[0].Quoted, "fields = %+v", fs)
+	assert.Equal(t, "; one", fs[0].Comments[0], "fields = %+v", fs)
+	assert.Nil(t, fs[1].Comments, "fields = %+v", fs)
 	fs[0].Comments[0] = "mutated"
-	if r.Fields()[0].Comments[0] != "; one" {
-		t.Error("Fields() must return a copy")
-	}
-	if r.Content() != "ab" || strings.Join(r.RawValues(), ",") != `"a","b"` || strings.Join(r.Values(), ",") != "a,b" {
-		t.Error("values")
-	}
+	assert.Equal(t, "; one", r.Fields()[0].Comments[0], "Fields() must return a copy")
+	assert.Equal(t, "ab", r.Content(), "values")
+	assert.Equal(t, `"a","b"`, strings.Join(r.RawValues(), ","), "values")
+	assert.Equal(t, "a,b", strings.Join(r.Values(), ","), "values")
 	w := r.WithComments("note", "; two", " ")
-	if got := strings.Join(w.Tail(), ","); got != "; end,; note ; two" {
-		t.Errorf("WithComments tail = %q", got)
-	}
-	if strings.Join(r.Tail(), ",") != "; end" || r.WithComments().Equal(r) != true {
-		t.Error("WithComments must not alias or change the original")
-	}
-	if es[0].WithComments("x").Comment() != "; top ; x" || es[1].WithComments("x").Comment() != "; x" || es[1].WithComments("x").Kind() != Comment {
-		t.Error("WithComments on comment/blank")
-	}
-	if r.WithOwner("other").Owner() != "other" || r.Owner() != "www" || r.WithOwner("").Owner() != "" {
-		t.Error("WithOwner")
-	}
+	assert.Equal(t, "; end,; note ; two", strings.Join(w.Tail(), ","), "WithComments tail")
+	assert.Equal(t, "; end", strings.Join(r.Tail(), ","), "WithComments must not alias or change the original")
+	assert.True(t, r.WithComments().Equal(r), "WithComments must not alias or change the original")
+	assert.Equal(t, "; top ; x", es[0].WithComments("x").Comment(), "WithComments on comment/blank")
+	assert.Equal(t, "; x", es[1].WithComments("x").Comment(), "WithComments on comment/blank")
+	assert.Equal(t, Comment, es[1].WithComments("x").Kind(), "WithComments on comment/blank")
+	assert.Equal(t, "other", r.WithOwner("other").Owner(), "WithOwner")
+	assert.Equal(t, "www", r.Owner(), "WithOwner")
+	assert.Empty(t, r.WithOwner("").Owner(), "WithOwner")
 	var zero Entry
-	if zero.Kind() != Blank || len(zero.Values()) != 0 || len(zero.Comments()) != 0 || zero.Content() != "" {
-		t.Error("zero entry")
-	}
-	mx := parseEntries(t, "@ MX 10 mail\n")[0]
-	if mx.Content() != "10 mail" || mx.Class() != "" || mx.classOrDefault() != "IN" {
-		t.Error("MX content/class")
-	}
+	assert.Equal(t, Blank, zero.Kind(), "zero entry")
+	assert.Empty(t, zero.Values(), "zero entry")
+	assert.Empty(t, zero.Comments(), "zero entry")
+	assert.Empty(t, zero.Content(), "zero entry")
+	mx := parseEntries(t, `@ MX 10 mail
+`)[0]
+	assert.Equal(t, "10 mail", mx.Content(), "MX content/class")
+	assert.Empty(t, mx.Class(), "MX content/class")
+	assert.Equal(t, "IN", mx.classOrDefault(), "MX content/class")
 }
 
 func TestParseDetails(t *testing.T) {
 	es := parseEntries(t, "a\tIN\tA\t192.0.2.1\r\n\r\n\r\n\n  ; indented\r\nb type65280 \\# 1 00\nc class3 TYPE1 x\nd 1H IN A x\ne IN 1h A x\n$include other.zone\n$GENERATE 1-10 h$ A 192.0.2.$ ; gen\n$origin foo ; o\n$TTL 1h\n\n\n")
-	if len(es) != 12 {
-		t.Fatalf("got %d entries: %+v", len(es), es)
-	}
-	if es[1].Kind() != Blank || es[2].Kind() != Comment || es[2].Comment() != "; indented" {
-		t.Errorf("blank/comment: %+v", es[1:3])
-	}
-	if e := es[3]; e.Type() != "TYPE65280" || e.RType() != 65280 || e.Owner() != "b" || strings.Join(e.RawValues(), " ") != `\# 1 00` {
-		t.Errorf("TYPE65280: %+v", e)
-	}
-	if e := es[4]; e.Class() != "CLASS3" || e.Type() != "TYPE1" || e.RType() != 1 {
-		t.Errorf("class3/TYPE1: %+v", e)
-	}
-	if _, ok := es[5].TTL(); !ok || es[5].Class() != "IN" {
-		t.Error("ttl before class")
-	}
-	if _, ok := es[6].TTL(); !ok || es[6].Class() != "IN" {
-		t.Error("class before ttl")
-	}
-	if es[7].Name() != "$INCLUDE" || es[8].Name() != "$GENERATE" || strings.Join(es[8].Tail(), "") != "; gen" || es[9].Name() != "$ORIGIN" || es[10].Name() != "$TTL" {
-		t.Errorf("directives: %+v", es[7:])
-	}
-	if last := es[len(es)-1]; last.Kind() != Blank || last.Line() != 14 {
-		t.Errorf("trailing blank lines must be kept as one entry: %+v", last)
-	}
+	require.Len(t, es, 12, "entries: %+v", es)
+	assert.Equal(t, Blank, es[1].Kind(), "blank/comment: %+v", es[1:3])
+	assert.Equal(t, Comment, es[2].Kind(), "blank/comment: %+v", es[1:3])
+	assert.Equal(t, "; indented", es[2].Comment(), "blank/comment: %+v", es[1:3])
+	e := es[3]
+	assert.Equal(t, "TYPE65280", e.Type(), "TYPE65280: %+v", e)
+	assert.Equal(t, uint16(65280), e.RType(), "TYPE65280: %+v", e)
+	assert.Equal(t, "b.", e.Owner(), "TYPE65280: no origin before it, so taken as absolute: %+v", e)
+	assert.Equal(t, `\# 1 00`, strings.Join(e.RawValues(), " "), "TYPE65280: %+v", e)
+	e = es[4]
+	assert.Equal(t, "CLASS3", e.Class(), "class3/TYPE1: %+v", e)
+	assert.Equal(t, "TYPE1", e.Type(), "class3/TYPE1: %+v", e)
+	assert.Equal(t, uint16(1), e.RType(), "class3/TYPE1: %+v", e)
+	_, ok := es[5].TTL()
+	assert.True(t, ok, "ttl before class")
+	assert.Equal(t, "IN", es[5].Class(), "ttl before class")
+	_, ok = es[6].TTL()
+	assert.True(t, ok, "class before ttl")
+	assert.Equal(t, "IN", es[6].Class(), "class before ttl")
+	assert.Equal(t, "$INCLUDE", es[7].Name(), "directives: %+v", es[7:])
+	assert.Equal(t, "$GENERATE", es[8].Name(), "directives: %+v", es[7:])
+	assert.Equal(t, "; gen", strings.Join(es[8].Tail(), ""), "directives: %+v", es[7:])
+	assert.Equal(t, "$ORIGIN", es[9].Name(), "directives: %+v", es[7:])
+	assert.Equal(t, "$TTL", es[10].Name(), "directives: %+v", es[7:])
+	last := es[len(es)-1]
+	assert.Equal(t, Blank, last.Kind(), "trailing blank lines must be kept as one entry: %+v", last)
+	assert.Equal(t, 14, last.Line(), "trailing blank lines must be kept as one entry: %+v", last)
 	// A final line without terminator.
-	if es := parseEntries(t, "a IN A 1"); len(es) != 1 || es[0].Owner() != "a" {
-		t.Error("no final newline")
+	if es := parseEntries(t, "a IN A 1"); assert.Len(t, es, 1, "no final newline") {
+		assert.Equal(t, "a", es[0].Owner(), "no final newline")
 	}
 	// Empty input.
-	if es := parseEntries(t, ""); len(es) != 0 {
-		t.Error("empty input")
-	}
+	assert.Empty(t, parseEntries(t, ""), "empty input")
 	// Comments in every position of a multi-line record.
-	es = parseEntries(t, "a IN TXT ( ; h1\n ; h2\n \"x\" ; fx\n ; fx2\n \"y\" ) ; t\n")
-	e := es[0]
-	if strings.Join(e.Head(), ",") != "; h1,; h2" || strings.Join(e.Fields()[0].Comments, ",") != "; fx,; fx2" || strings.Join(e.Tail(), ",") != "; t" {
-		t.Errorf("comment positions: %+v", e)
-	}
+	es = parseEntries(t, `a IN TXT ( ; h1
+ ; h2
+ "x" ; fx
+ ; fx2
+ "y" ) ; t
+`)
+	e = es[0]
+	assert.Equal(t, "; h1,; h2", strings.Join(e.Head(), ","), "comment positions: %+v", e)
+	assert.Equal(t, "; fx,; fx2", strings.Join(e.Fields()[0].Comments, ","), "comment positions: %+v", e)
+	assert.Equal(t, "; t", strings.Join(e.Tail(), ","), "comment positions: %+v", e)
 	// Zero-field record with a comment keeps it as tail.
-	e = parseEntries(t, "a IN A ; none\n")[0]
-	if len(e.Head()) != 0 || strings.Join(e.Tail(), "") != "; none" {
-		t.Errorf("zero-field comment: %+v", e)
-	}
+	e = parseEntries(t, `a IN A ; none
+`)[0]
+	assert.Empty(t, e.Head(), "zero-field comment: %+v", e)
+	assert.Equal(t, "; none", strings.Join(e.Tail(), ""), "zero-field comment: %+v", e)
 	// Escapes in items.
-	e = parseEntries(t, `a\;b\ c IN TXT d\\e\032`+"\n")[0]
-	if e.Owner() != `a\;b\ c` || e.Values()[0] != `d\e ` || e.RawValues()[0] != `d\\e\032` {
-		t.Errorf("item escapes: %+v", e)
-	}
+	e = parseEntries(t, `a\;b\ c IN TXT d\\e\032
+`)[0]
+	assert.Equal(t, `a\;b\ c`, e.Owner(), "item escapes: %+v", e)
+	assert.Equal(t, `d\e `, e.Values()[0], "item escapes: %+v", e)
+	assert.Equal(t, `d\\e\032`, e.RawValues()[0], "item escapes: %+v", e)
 	// Blank-led line without previous owner still parses.
-	e = parseEntries(t, "  IN A 192.0.2.1\n")[0]
-	if e.Owner() != "" || e.Type() != "A" {
-		t.Errorf("inherited owner: %+v", e)
-	}
+	e = parseEntries(t, `  IN A 192.0.2.1
+`)[0]
+	assert.Empty(t, e.Owner(), "inherited owner: %+v", e)
+	assert.Equal(t, "A", e.Type(), "inherited owner: %+v", e)
 	// Opaque high bytes are kept.
 	e = parseEntries(t, "xn--\xc3\xa9 IN TXT \"\xff\"\n")[0]
-	if e.Owner() != "xn--\xc3\xa9" || e.Values()[0] != "\xff" {
-		t.Errorf("high bytes: %+v", e)
-	}
+	assert.Equal(t, "xn--\xc3\xa9", e.Owner(), "high bytes: %+v", e)
+	assert.Equal(t, "\xff", e.Values()[0], "high bytes: %+v", e)
 	// Parse error line numbers.
-	_, err := Parse([]byte("a IN A 1\nb IN A 2\n$NOPE\n"))
+	_, err := Parse([]byte(`a IN A 1
+b IN A 2
+$NOPE
+`), "")
 	var pe *ParseError
-	if !errors.As(err, &pe) || pe.Line != 3 || pe.Col != 1 || pe.Error() != "line 3: unknown directive $NOPE" {
-		t.Errorf("error = %v", err)
-	}
-	_, err = Parse([]byte("a IN A 1 ; c\n IN"))
-	if !errors.As(err, &pe) || pe.Line != 2 || pe.Msg != "missing type" {
-		t.Errorf("error = %v", err)
-	}
+	require.ErrorAs(t, err, &pe, "error = %v", err)
+	assert.Equal(t, 3, pe.Line, "error = %v", err)
+	assert.Equal(t, 1, pe.Col, "error = %v", err)
+	assert.Equal(t, "line 3: unknown directive $NOPE", pe.Error())
+	_, err = Parse([]byte(`a IN A 1 ; c
+ IN`), "")
+	require.ErrorAs(t, err, &pe, "error = %v", err)
+	assert.Equal(t, 2, pe.Line, "error = %v", err)
+	assert.Equal(t, "missing type", pe.Msg, "error = %v", err)
 }

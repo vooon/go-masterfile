@@ -3,6 +3,7 @@
 package masterfile
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 
@@ -66,54 +67,69 @@ func allDigits(s string) bool {
 	return true
 }
 
-// Parse parses zone file text. The result keeps every entry in order with
-// its comments; owners are as written (see [File.ResolveOwners]). Errors
-// are *[ParseError] values naming the line. Parse never panics on any
-// input and performs no I/O.
-func Parse(data []byte) (*File, error) {
+// Parse parses zone file text into a [Zone]. Every entry is kept in order
+// with its comments. The apex is the owner of the first SOA record,
+// resolved with apex as the origin in force before any $ORIGIN line; with
+// no SOA it is apex itself, else the first $ORIGIN, else the root ".". A
+// non-empty apex is also an assertion: when the SOA names a different zone,
+// [ErrApexMismatch] is returned, so a file edited over time keeps its
+// origin. Names are resolved against the origin in force, which before any
+// $ORIGIN line is apex, or the root when apex is empty (a relative name is
+// then taken as absolute, as the reference parser does); the apex found
+// only decides what the resolved owners are relative to (see [Zone]), so a
+// file without origin is never reinterpreted. Syntax errors are
+// *[ParseError] values naming the line. Parse never panics on any input
+// and performs no I/O.
+func Parse(data []byte, apex string) (*Zone, error) {
 	lx, err := newLexer(data)
 	if err != nil {
 		return nil, err
 	}
-	f := &File{}
+	z := &Zone{}
 	var toks []token
 	for {
 		toks = toks[:0]
 		line := lx.line
-		for {
+		eof := false
+		for !eof {
 			tok, err := lx.next()
 			if err != nil {
 				return nil, err
 			}
-			if tok.kind == tokEOF {
-				if len(toks) == 0 {
-					return f, nil
-				}
-				if err := f.add(toks, line); err != nil {
-					return nil, err
-				}
-				return f, nil
-			}
 			if tok.kind == tokNewline {
 				break
 			}
-			toks = append(toks, tok)
+			if eof = tok.kind == tokEOF; !eof {
+				toks = append(toks, tok)
+			}
 		}
-		if err := f.add(toks, line); err != nil {
-			return nil, err
+		if len(toks) > 0 || !eof {
+			if err := z.add(toks, line); err != nil {
+				return nil, err
+			}
+		}
+		if eof {
+			break
 		}
 	}
+	found, known := findApex(z.Entries, apex)
+	if apex != "" && !NameEqual(found, Fqdn(apex)) {
+		return nil, fmt.Errorf("%w: file has %s, caller expects %s", ErrApexMismatch, found, Fqdn(apex))
+	}
+	resolveOwners(z.Entries, apex, found)
+	z.apex, z.origin, z.noOrigin = found, startOrigin(apex), !known
+	return z, nil
 }
 
-func (f *File) add(toks []token, line int) error {
+func (z *Zone) add(toks []token, line int) error {
 	e, err := buildEntry(toks, line)
 	if err != nil {
 		return err
 	}
-	if e.kind == Blank && len(f.Entries) > 0 && f.Entries[len(f.Entries)-1].kind == Blank {
+	if e.kind == Blank && len(z.Entries) > 0 && z.Entries[len(z.Entries)-1].kind == Blank {
 		return nil
 	}
-	f.Entries = append(f.Entries, e)
+	z.Entries = append(z.Entries, e)
 	return nil
 }
 

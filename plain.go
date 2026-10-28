@@ -8,14 +8,10 @@ import (
 	"strings"
 )
 
-// WritePlain writes the entries without alignment: fields separated by one
-// space, owners relative to the $ORIGIN in force, values as written,
-// multi-line only when a comment position requires it, comments in place.
-// It is deliberately simple and is the reference that [Verify] checks
-// [Format] against. Its exact spacing is not part of the contract.
-func WritePlain(w io.Writer, apex string, entries []Entry) error {
+// writePlain implements [Zone.WritePlain] over resolved entries; origin is
+// the origin in force before the first $ORIGIN line.
+func writePlain(w io.Writer, origin, apex string, entries []Entry) error {
 	bw := bufio.NewWriter(w)
-	origin := apex
 	for _, e := range entries {
 		switch e.kind {
 		case Blank:

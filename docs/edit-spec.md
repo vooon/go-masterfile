@@ -44,48 +44,65 @@ zone file that must:
 
 ## 2. Model
 
-### 2.1 Zone session
+### 2.1 Zone and operations
+
+The core `Zone` (core spec section 5) is the editing session: `Parse(data,
+apex)` builds it with owners resolved and the apex checked
+(`ErrApexMismatch`), `New(apex)` builds an empty one. zoneomatic requires a
+served file to have an origin and an SOA; `(*Zone).Check()` enforces that
+after parsing (`ErrNoOrigin`, `ErrNoSOA`), while `$INCLUDE` fragments skip
+it. `(*Zone).Apex()` returns the absolute apex.
+
+Operations are values implementing `Op`, applied with
 
 ```go
-type Zone struct { /* apex, original entries, working entries */ }
-
-func Open(data []byte, apex string) (*Zone, error)
+func (z *Zone) Apply(ops ...Op) ([]Result, error)
 ```
 
-`Open` parses `data` (core `Parse`), finds the apex (core `Origin` with
-`apex` as hint), requires an SOA (`ErrNoSOA` otherwise), and resolves owners
-(core `ResolveOwners`). When `apex` is not empty and differs from the SOA
-owner (core `NameEqual` after `Fqdn`), `ErrApexMismatch` is returned: a file
-that is edited over time must keep its origin. `(*Zone).Apex()` returns the
-absolute apex.
-
-Operations are methods on `*Zone`. They change the working entries and
-return a `Result`; the original entries are kept for `Commit`.
+in order and atomically: when an operation fails, the error names it and the
+zone is left exactly as it was. Each returns a `Result`:
 
 ```go
 type Result struct {
-    Matched  int // entries the selector matched
-    Removed  int // entries dropped
-    Inserted int // entries added
-    Index    int // position of the first inserted entry, -1 if none
+    Matched  int  // entries the selector matched
+    Removed  int  // entries dropped
+    Inserted int  // entries added
+    Index    int  // position of the first inserted entry, -1 if none
+    Changed  bool // the zone's meaning changed
 }
 ```
 
-Methods never write anything. The caller decides when to call `Commit`.
-
-### 2.2 Commit
+Records travel inside operations as data, not entries:
 
 ```go
-func (z *Zone) Changed() bool
+type RR struct {
+    Type    uint16
+    TTL     uint32 // 0: no explicit TTL
+    Content string // 2.4
+}
+```
+
+`Apply` builds them with core `NewRecord` (owner from the operation), so
+the security boundary holds and an operation can be logged or marshalled.
+Operations never write anything. The caller decides when to call `Commit`.
+
+### 2.2 Changed and Commit
+
+```go
+z.Changed // field
 func (z *Zone) Commit(bumpSerial bool) (data []byte, changed bool, err error)
 ```
 
-`Changed` is core `EntriesEqual` of original and working entries, negated.
-`Commit` returns `changed == false` and `data == nil` when nothing changed.
-Otherwise it writes the working entries with core `WritePlain` and `Format`
-(bumping the serial when asked), runs core `Verify` on the pair, and returns
-the formatted bytes. A `Verify` failure is returned as is (it wraps
-`ErrUnsafeWrite`) and nothing else is returned: the caller must not write.
+`Zone.Changed` is a flag: every operation compares the entries before and
+after with core `EntriesEqual` and sets it when they differ in meaning
+(`Result.Changed` reports the same per operation); code that edits
+`Entries` by hand sets it itself. `Commit` returns `changed == false` and
+`data == nil` while the flag is false. Otherwise it writes the entries with
+core `WritePlain` and `Format` (bumping the serial when asked), runs core
+`Verify` on the pair, and returns the formatted bytes. A `Verify` failure
+is returned as is (it wraps `ErrUnsafeWrite`) and nothing else is returned:
+the caller must not write. `Commit` leaves the flag alone: a `Zone` is one
+read-modify-write cycle.
 
 ### 2.3 Names
 
@@ -102,8 +119,10 @@ comparison is core `NameEqual`.
 
 A record's **content** is core `Content()`: TXT/SPF strings concatenated,
 other fields joined by one space. A content string given by a client is
-normalised the same way: for TXT/SPF it is taken as is; for other types its
-whitespace runs are collapsed to one space and trimmed. All value matching
+normalised the same way: for TXT/SPF it is taken as is; for other types it
+is tokenised like rdata and its decoded fields joined by one space (so
+quoting and spacing do not matter; a string that does not tokenise only has
+its whitespace runs collapsed). All value matching
 in this package compares contents, nowhere raw fields. (zoneomatic currently
 matches PTR targets and ACME tokens byte for byte and other values by
 content; this unifies them.)
@@ -131,22 +150,33 @@ Where new records go when nothing was there to replace:
 ```go
 type Anchor struct {
     Owner  string // records with this owner (2.3)
-    Prefix string // or: records whose relative owner starts with this label prefix, case-insensitive
+    Prefix string // records whose relative owner starts with this label prefix, case-insensitive
+    Under  string // records whose owner is this name or below it (2.3)
+    Type   uint16 // records of this type
 }
 
 type Placement []Anchor
 ```
 
-Anchors are tried in order. The first anchor that matches any Record entry
-decides: new records are inserted right after the **last** matching entry.
-If no anchor matches, or `Placement` is empty, new records are appended at
-the end. Only Record entries count; a comment or blank line after the last
-matching record stays below the inserted records.
+Conditions set in one anchor must all hold. Anchors are tried in order. The
+first anchor that matches any Record entry decides: new records are
+inserted right after the **last** matching entry and after the records
+that follow it with the same owner, so an owner's block (an A/AAAA pair) is
+never split. If no anchor matches, or `Placement` is empty, new records are
+appended at the end. Only Record entries count; a comment or blank line
+after the last matching record stays below the inserted records.
 
 Example from zoneomatic: ACME records use
 `Placement{{Owner: name}, {Prefix: "_acme-challenge."}}`: next to the same
 name if it has records, else after the last challenge record in the file,
 else at the end.
+
+`(*Zone).DefaultPlacement(owner string, rtype uint16) Placement` is the
+list a human would use: the owner's own records; else the records whose
+first label is the same (`{Prefix: "_acme-challenge."}` for
+`_acme-challenge.zot`); else the records under the same parent (siblings:
+`{Under: "zot"}`); else the last record of the same type; else the end.
+`Insert` (3.6) uses it when given no placement.
 
 ### 2.7 Carried comments
 
@@ -157,10 +187,9 @@ records and inserts nothing, the comments are dropped with them.
 
 ## 3. Operations
 
-All owners are checked per 2.3 first (`ErrNotInZone`). `records` arguments
-are entries built with core `NewRecord`, so they are already safe; the
-operation sets their owner to the normalised owner if it differs (core
-`WithOwner`).
+All owners are checked per 2.3 first (`ErrNotInZone`). Records are `RR`
+values (2.1) built with core `NewRecord` under the operation's owner, in
+the spelling the zone already uses for that owner when it has records.
 
 ### 3.1 Replace
 
@@ -171,20 +200,20 @@ const (
     ReplaceFirst                    // only the first match goes, later matches stay
 )
 
-type ReplaceOptions struct {
+type Replace struct {
+    Selector
+    Records   []RR
     Mode      ReplaceMode
     MustExist bool      // no match: ErrNotFound instead of inserting
     Placement Placement // where to insert when nothing matched
 }
-
-func (z *Zone) Replace(sel Selector, records []Entry, opt ReplaceOptions) (Result, error)
 ```
 
-Walk the entries once. The first entry matching `sel` is replaced by
-`records` (zero or more). Every later match is dropped (`ReplaceAll`) or kept
+Walk the entries once. The first entry matching `Selector` is replaced by
+`Records` (zero or more). Every later match is dropped (`ReplaceAll`) or kept
 (`ReplaceFirst`). Comments of dropped matches are carried (2.7). If nothing
 matched: with `MustExist` return `ErrNotFound` and change nothing; otherwise
-insert `records` per `Placement`. Empty `records` and no match is a no-op
+insert `Records` per `Placement`. Empty `Records` and no match is a no-op
 without error (a delete of something absent).
 
 The `Changed` outcome follows from entry equality: replacing `www IN A
@@ -194,15 +223,16 @@ happens.
 ### 3.2 Delete
 
 ```go
-func (z *Zone) Delete(sel Selector) (Result, error)
+type Delete struct{ Selector }
 ```
 
-`Replace(sel, nil, ReplaceOptions{Mode: ReplaceAll})`. Absent is a no-op.
+`Replace{Selector: sel, Mode: ReplaceAll}` with no records. Absent is a
+no-op.
 
 ### 3.3 DeleteOwner
 
 ```go
-func (z *Zone) DeleteOwner(owner string) (Result, error)
+type DeleteOwner struct{ Owner string }
 ```
 
 Drops every Record entry with that owner, any type. Comments go with them.
@@ -210,50 +240,79 @@ Drops every Record entry with that owner, any type. Comments go with them.
 ### 3.4 AddRemove
 
 ```go
-func (z *Zone) AddRemove(owner string, rtype uint16, add []Entry, remove []string, p Placement) (Result, error)
+type AddRemove struct {
+    Owner     string
+    Type      uint16
+    TTL       uint32   // for added records; 0: no explicit TTL
+    Add       []string // contents
+    Remove    []string // contents
+    Placement Placement
+}
 ```
 
 Edits one RRset in place, as DNS UPDATE does (RFC 2136):
 
-1. every entry of the set (owner and type) whose content is in `remove` is
+1. every entry of the set (owner and type) whose content is in `Remove` is
    dropped;
-2. of the remaining set, the contents are collected; each entry of `add`
-   whose content is already present, or duplicates an earlier `add`, is
-   skipped;
-3. the surviving `add` entries are inserted right after the last remaining
-   entry of the set; if the set is now empty, per `Placement`.
+2. of the remaining set, the contents are collected; each content of `Add`
+   that is already present, or duplicates an earlier one, is skipped;
+3. the surviving `Add` contents are inserted as records right after the
+   last remaining entry of the set; if the set is now empty, per
+   `Placement`.
 
-Adding a present value and removing an absent one are no-ops. `add` is
-processed after `remove`, so a value both removed and added ends up present
+Adding a present value and removing an absent one are no-ops. `Add` is
+processed after `Remove`, so a value both removed and added ends up present
 once, at the position rule of step 3.
 
 ### 3.5 Collapse
 
 ```go
-func (z *Zone) Collapse(owner string, rtype uint16, drop []string, keep Entry, p Placement) (Result, error)
+type Collapse struct {
+    Owner     string
+    Type      uint16
+    Drop      []string // contents
+    Keep      string   // content
+    KeepTTL   uint32   // 0: no explicit TTL
+    Placement Placement
+}
 ```
 
-Leaves the set in a state with exactly one record of content `keep` and no
-record of a content in `drop`, used by zoneomatic's ACME cleanup (the
-`keep` record is the placeholder):
+Leaves the set in a state with exactly one record of content `Keep` and no
+record of a content in `Drop`, used by zoneomatic's ACME cleanup (the
+`Keep` record is the placeholder):
 
-1. entries of the set with content in `drop` are removed;
-2. entries of the set with content equal to `keep`'s content: the first stays,
-   later ones are removed;
-3. if none stayed, `keep` is inserted at the position of the first entry
-   removed in step 1, else per `Placement`;
+1. entries of the set with content in `Drop` are removed;
+2. entries of the set with content equal to `Keep`: the first stays, later
+   ones are removed;
+3. if none stayed, a `Keep` record is inserted at the position of the first
+   entry removed in step 1, else per `Placement`;
 4. comments of all removed entries are carried onto the entry that stayed or
    was inserted.
 
 Entries of the set with other contents are untouched.
 
-### 3.6 Queries
+### 3.6 Insert
+
+```go
+type Insert struct {
+    Owner     string
+    Records   []RR
+    Placement Placement // empty: DefaultPlacement(Owner, Records[0].Type)
+}
+```
+
+Adds the records the zone does not already hold (same owner, type and
+content; those it holds count as `Matched`) where a human would put them
+(2.6). Nothing else is touched; no records is a no-op.
+
+### 3.7 Queries
 
 ```go
 func (z *Zone) Select(sel Selector) []Entry              // in file order, copies
 func (z *Zone) Owners(sel Selector) []string             // absolute owners of matches, deduplicated, file order
 func (z *Zone) RRSets() []RRSet
 func (z *Zone) Serial() (uint32, bool)
+func (z *Zone) SOA() (Entry, bool)
 
 type RRSet struct {
     Owner    string   // absolute
@@ -304,14 +363,16 @@ func ReversePrefix(apex string) (netip.Prefix, bool)
 
 | Error | When |
 |---|---|
-| `ErrNoSOA` | `Open`: no SOA record |
-| `ErrApexMismatch` | `Open`: SOA owner differs from the given apex |
-| `ErrNotInZone` | an owner outside the apex |
-| `ErrNotFound` | `Replace` with `MustExist` and no match |
+| `ErrNoOrigin` | `Check`: the apex is only the root fallback |
+| `ErrNoSOA` | `Check`: no SOA record |
+| `ErrApexMismatch` | `Parse`: SOA owner differs from the given apex |
+| `ErrNotInZone` | `Apply`: an owner or anchor outside the apex |
+| `ErrNotFound` | `Apply`: `Replace` with `MustExist` and no match |
+| `ErrInvalidRecord` | `Apply`: an `RR` that `NewRecord` rejects |
 | core `ErrUnsafeWrite` | `Commit`: verification failed |
-| core `*ParseError` | `Open`: syntax |
+| core `*ParseError` | `Parse`: syntax |
 
-`ErrInvalidRecord` is not produced here: records arrive already built.
+`Apply` fails as a whole: a failing operation leaves the zone untouched.
 
 ## 6. Examples (normative)
 
@@ -320,7 +381,11 @@ they carry documentation addresses instead (`192.0.2.0/24`, `2001:db8::/32`,
 reverse zone `2.0.192.in-addr.arpa.`); the layouts below are otherwise what
 the goldens hold. Outputs below are
 `Commit(true)` results in a test where the clock gives serial `1763822926`
-(one above the fixture's). The serial comment follows the core spec.
+(one above the fixture's). The serial comment follows the core spec. Calls
+are written in shorthand: `Replace({selector}, [records], {options})`
+stands for `Apply(Replace{Selector: ..., Records: ..., ...})`, and records
+such as `4 IN PTR new.example.com.` for `RR{Type: PTR, Content:
+"new.example.com."}` under the operation's owner.
 
 ### 6.1 Reverse zone fixture
 
@@ -381,7 +446,7 @@ Tails, each after the head:
 ```
 
 The same call with `hub.example.com.` matches, replaces like with like, and
-`Changed()` is false.
+`Changed` is false.
 
 **replace** — `Replace({Owner:"4", Types:[PTR]}, [4 IN PTR
 rebooted.example.com.], {Mode: ReplaceFirst})`:
@@ -508,7 +573,7 @@ _acme-challenge.zot IN TXT  "placeholder"
 
 **AddRemove** — on the fixture, `AddRemove("loop", A, [loop IN A 1.2.3.4],
 nil, nil)` inserts after `loop IN A 127.0.0.1` (before the `AAAA` line); the
-same call again reports `Changed()` false. `AddRemove("loop", A, nil,
+same call again reports `Changed` false. `AddRemove("loop", A, nil,
 ["127.0.0.1"], nil)` leaves only the `AAAA` line under `loop`; repeating it
 is a no-op. On a zone where `_acme-challenge` has `tok-1` on an owner line
 and `tok-2` on a continuation line, `AddRemove("_acme-challenge", TXT, nil,
@@ -519,7 +584,7 @@ resolved owners, not on what was written.
 leaves the `; Existing record` comment and the blank line.
 
 **MustExist** — `Replace({Owner:"nothere", Types:[A]}, [...], {MustExist:
-true})` returns `ErrNotFound` and `Changed()` stays false.
+true})` returns `ErrNotFound` and `Changed` stays false.
 
 **Not in zone** — any operation with owner `www.example.net.` returns
 `ErrNotInZone` before touching anything.
@@ -559,7 +624,7 @@ true})` returns `ErrNotFound` and `Changed()` stays false.
 - Byte-exact tests for every section 6 output, with the fixtures copied into
   `testdata/` and a `-update` flag for goldens.
 - Idempotence: for every operation in section 6, applying it a second time
-  to its own output leaves `Changed()` false.
+  to its own output leaves `Changed` false.
 - Purity: the input `[]Entry` of each operation is unchanged afterwards
   (compare a deep copy).
 - Property tests on generated zones: `Replace` followed by `Delete` of the
@@ -567,16 +632,19 @@ true})` returns `ErrNotFound` and `Changed()` stays false.
   set; `AddRemove(add)` then `AddRemove(remove)` of the same contents restores
   `RRSets()`; carried comments: every comment present before an operation is
   present after it unless the operation deleted records without inserting.
-- Fuzz: `Open` on arbitrary bytes never panics; a successful `Open` followed
-  by any operation with arbitrary owner/content strings never panics, and
-  `Commit` either verifies or returns `ErrUnsafeWrite`.
+- Fuzz: `Parse` on arbitrary bytes never panics; a successful `Parse`
+  followed by any operation with arbitrary owner/content strings never
+  panics, and `Commit` either verifies or returns `ErrUnsafeWrite`.
+- Atomicity: an `Apply` whose later operation fails leaves the zone as it
+  was.
 - Helpers: table tests for section 6.4, plus `ReverseAddr(ReverseName(a)) ==
   a` for random addresses.
 
 ## 8. Integration into zoneomatic
 
-Each controller method becomes: lock, read file, `Open(data, s.apex)`,
-operations, `Commit(true)`, atomic write when `changed`, log the `Result`.
+Each controller method becomes: lock, read file, `Parse(data, s.apex)` and
+`Check()`, `Apply(ops...)`, `Commit(true)`, atomic write when `changed`,
+log the `Result`s. The table uses the shorthand of section 6.
 Tracing and slog stay in the controller. The mapping:
 
 | zoneomatic | edit |

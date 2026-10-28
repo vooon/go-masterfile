@@ -13,37 +13,37 @@ import (
 	"testing"
 
 	"github.com/miekg/dns"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 const (
 	acmeToken = "8NwtedqEdkceTHTZILXsMU2UWEeEon24tXw0dSSDkrs"
 	fakeToken = "fake/XKo9kaBlVnj9q0XWAWdoSYEPCOrhiZk3ztoBHx5c3O6X"
-	acmePlace = "_acme-challenge."
 )
 
-func rec(t *testing.T, owner string, ttl uint32, rtype uint16, rdata string) Entry {
-	t.Helper()
-	e, err := NewRecord(owner, ttl, rtype, rdata)
-	if err != nil {
-		t.Fatalf("NewRecord(%q, %d, %d, %q): %v", owner, ttl, rtype, rdata, err)
-	}
-	return e
-}
+var acmePlacement = Placement{{Owner: "_acme-challenge"}, {Prefix: "_acme-challenge."}}
 
 func openFixture(t *testing.T, name string) *Zone {
 	t.Helper()
 	data, err := os.ReadFile(filepath.Join("testdata", "edit", name))
-	if err != nil {
-		t.Fatal(err)
-	}
-	z, err := Open(data, "")
-	if err != nil {
-		t.Fatalf("Open(%s): %v", name, err)
-	}
+	require.NoError(t, err)
+	z, err := Parse(data, "")
+	require.NoError(t, err, "Parse(%s)", name)
 	return z
 }
 
-var acmePlacement = Placement{{Owner: "_acme-challenge"}, {Prefix: acmePlace}}
+// apply runs ops and fails the test on error.
+func apply(t *testing.T, z *Zone, ops ...Op) []Result {
+	t.Helper()
+	rs, err := z.Apply(ops...)
+	require.NoError(t, err, "Apply")
+	return rs
+}
+
+func sel(owner string, types ...uint16) Selector { return Selector{Owner: owner, Types: types} }
+
+func rr(rtype uint16, content string) RR { return RR{Type: rtype, Content: content} }
 
 // editCase is one golden scenario: operations applied to a fixture, the
 // committed bytes compared with testdata/edit/<golden>.golden.
@@ -51,220 +51,146 @@ type editCase struct {
 	name    string
 	fixture string
 	golden  string // defaults to name
-	changed bool   // expected Changed() after apply
+	changed bool   // expected Zone.Changed after apply
 	multi   bool   // a multi-step flow: not idempotent as a whole
 	want    []Result
 	apply   func(t *testing.T, z *Zone) []Result
 }
 
-// op collects an operation's result, failing the test on error.
-type op struct {
-	t   *testing.T
-	got []Result
-}
-
-func (o *op) do(r Result, err error) {
-	o.t.Helper()
-	if err != nil {
-		o.t.Fatalf("operation: %v", err)
-	}
-	o.got = append(o.got, r)
-}
-
 func editCases() []editCase {
-	ptr := func(t *testing.T, target string) Entry { return rec(t, "4", 0, dns.TypePTR, target) }
-	txt := func(t *testing.T, owner, value string) Entry { return rec(t, owner, 0, dns.TypeTXT, value) }
-	all := ReplaceOptions{Mode: ReplaceAll}
-	acme := ReplaceOptions{Mode: ReplaceAll, Placement: acmePlacement}
+	ptr := func(target string) RR { return rr(dns.TypePTR, target) }
+	txt := func(value string) RR { return rr(dns.TypeTXT, value) }
+	acme := func(owner string, records ...RR) Replace {
+		return Replace{Selector: sel(owner, dns.TypeTXT), Records: records, Placement: acmePlacement}
+	}
 	phSel := Selector{Owner: "_acme-challenge", Types: []uint16{dns.TypeTXT}, Contents: []string{"placeholder"}}
+	ph := func(token string) Replace {
+		return Replace{Selector: phSel, Records: []RR{txt(token)}, Placement: acmePlacement}
+	}
+	one := func(op Op) func(t *testing.T, z *Zone) []Result {
+		return func(t *testing.T, z *Zone) []Result { return apply(t, z, op) }
+	}
 	return []editCase{
 		{name: "ptr-append", fixture: "rev.zone", changed: true,
-			want: []Result{{Inserted: 1, Index: 13}},
-			apply: func(t *testing.T, z *Zone) []Result {
-				o := &op{t: t}
-				o.do(z.Replace(Selector{Owner: "4", Types: []uint16{dns.TypePTR}, Contents: []string{"new.example.com."}},
-					[]Entry{ptr(t, "new.example.com.")}, ReplaceOptions{Mode: ReplaceAll, Placement: Placement{{Owner: "4"}}}))
-				return o.got
-			}},
+			want: []Result{{Inserted: 1, Index: 13, Changed: true}},
+			apply: one(Replace{Selector: Selector{Owner: "4", Types: []uint16{dns.TypePTR}, Contents: []string{"new.example.com."}},
+				Records: []RR{ptr("new.example.com.")}, Placement: Placement{{Owner: "4"}}})},
 		{name: "ptr-append-same", fixture: "rev.zone", changed: false,
 			want: []Result{{Matched: 1, Removed: 1, Inserted: 1, Index: 11}},
-			apply: func(t *testing.T, z *Zone) []Result {
-				o := &op{t: t}
-				o.do(z.Replace(Selector{Owner: "4", Types: []uint16{dns.TypePTR}, Contents: []string{"hub.example.com."}},
-					[]Entry{ptr(t, "hub.example.com.")}, ReplaceOptions{Mode: ReplaceAll, Placement: Placement{{Owner: "4"}}}))
-				return o.got
-			}},
+			apply: one(Replace{Selector: Selector{Owner: "4", Types: []uint16{dns.TypePTR}, Contents: []string{"hub.example.com."}},
+				Records: []RR{ptr("hub.example.com.")}, Placement: Placement{{Owner: "4"}}})},
 		{name: "ptr-replace", fixture: "rev.zone", changed: true,
-			want: []Result{{Matched: 2, Removed: 1, Inserted: 1, Index: 11}},
-			apply: func(t *testing.T, z *Zone) []Result {
-				o := &op{t: t}
-				o.do(z.Replace(Selector{Owner: "4.2.0.192.in-addr.arpa.", Types: []uint16{dns.TypePTR}},
-					[]Entry{ptr(t, "rebooted.example.com.")}, ReplaceOptions{Mode: ReplaceFirst}))
-				return o.got
-			}},
+			want:  []Result{{Matched: 2, Removed: 1, Inserted: 1, Index: 11, Changed: true}},
+			apply: one(Replace{Selector: sel("4.2.0.192.in-addr.arpa.", dns.TypePTR), Records: []RR{ptr("rebooted.example.com.")}, Mode: ReplaceFirst})},
 		{name: "ptr-replace-all", fixture: "rev.zone", changed: true,
-			want: []Result{{Matched: 2, Removed: 2, Inserted: 1, Index: 11}},
-			apply: func(t *testing.T, z *Zone) []Result {
-				o := &op{t: t}
-				o.do(z.Replace(Selector{Owner: "4", Types: []uint16{dns.TypePTR}}, []Entry{ptr(t, "clean.example.com.")}, all))
-				return o.got
-			}},
+			want:  []Result{{Matched: 2, Removed: 2, Inserted: 1, Index: 11, Changed: true}},
+			apply: one(Replace{Selector: sel("4", dns.TypePTR), Records: []RR{ptr("clean.example.com.")}})},
 		{name: "ptr-create", fixture: "rev.zone", changed: true,
-			want: []Result{{Inserted: 1, Index: 13}},
-			apply: func(t *testing.T, z *Zone) []Result {
-				o := &op{t: t}
-				o.do(z.Replace(Selector{Owner: "5", Types: []uint16{dns.TypePTR}},
-					[]Entry{rec(t, "5", 0, dns.TypePTR, "five.example.com.")}, ReplaceOptions{Mode: ReplaceAll, Placement: Placement{{Owner: "5"}}}))
-				return o.got
-			}},
+			want:  []Result{{Inserted: 1, Index: 13, Changed: true}},
+			apply: one(Replace{Selector: sel("5", dns.TypePTR), Records: []RR{ptr("five.example.com.")}, Placement: Placement{{Owner: "5"}}})},
 		{name: "ptr-delete-target", fixture: "rev.zone", changed: true,
-			want: []Result{{Matched: 1, Removed: 1, Index: -1}},
-			apply: func(t *testing.T, z *Zone) []Result {
-				o := &op{t: t}
-				o.do(z.Delete(Selector{Owner: "4", Types: []uint16{dns.TypePTR}, Contents: []string{"legacy.example.com."}}))
-				return o.got
-			}},
+			want:  []Result{{Matched: 1, Removed: 1, Index: -1, Changed: true}},
+			apply: one(Delete{Selector{Owner: "4", Types: []uint16{dns.TypePTR}, Contents: []string{"legacy.example.com."}}})},
 		{name: "ddns-new", fixture: "fwd.zone", changed: true,
-			want: []Result{{Inserted: 2, Index: 15}},
-			apply: func(t *testing.T, z *Zone) []Result {
-				o := &op{t: t}
-				o.do(z.Replace(Selector{Owner: "new-entry", Types: []uint16{dns.TypeA, dns.TypeAAAA}},
-					[]Entry{rec(t, "new-entry", 0, dns.TypeA, "192.0.2.4"), rec(t, "new-entry", 0, dns.TypeAAAA, "2001:db8::4")}, all))
-				return o.got
-			}},
+			want:  []Result{{Inserted: 2, Index: 15, Changed: true}},
+			apply: one(Replace{Selector: sel("new-entry", dns.TypeA, dns.TypeAAAA), Records: []RR{rr(dns.TypeA, "192.0.2.4"), rr(dns.TypeAAAA, "2001:db8::4")}})},
 		{name: "ddns-loop-v4", fixture: "fwd.zone", changed: true,
-			want: []Result{{Matched: 1, Removed: 1, Inserted: 1, Index: 10}},
-			apply: func(t *testing.T, z *Zone) []Result {
-				o := &op{t: t}
-				o.do(z.Replace(Selector{Owner: "loop", Types: []uint16{dns.TypeA}}, []Entry{rec(t, "loop", 0, dns.TypeA, "192.0.2.10")}, all))
-				return o.got
-			}},
+			want:  []Result{{Matched: 1, Removed: 1, Inserted: 1, Index: 10, Changed: true}},
+			apply: one(Replace{Selector: sel("loop", dns.TypeA), Records: []RR{rr(dns.TypeA, "192.0.2.10")}})},
 		{name: "ddns-loop-v4v6", fixture: "fwd.zone", changed: true,
-			want: []Result{{Matched: 2, Removed: 2, Inserted: 2, Index: 10}},
-			apply: func(t *testing.T, z *Zone) []Result {
-				o := &op{t: t}
-				o.do(z.Replace(Selector{Owner: "LOOP.at.example.com.", Types: []uint16{dns.TypeA, dns.TypeAAAA}},
-					[]Entry{rec(t, "loop", 0, dns.TypeA, "192.0.2.10"), rec(t, "loop", 0, dns.TypeAAAA, "2001:db8::10")}, all))
-				return o.got
-			}},
+			want:  []Result{{Matched: 2, Removed: 2, Inserted: 2, Index: 10, Changed: true}},
+			apply: one(Replace{Selector: sel("LOOP.at.example.com.", dns.TypeA, dns.TypeAAAA), Records: []RR{rr(dns.TypeA, "192.0.2.10"), rr(dns.TypeAAAA, "2001:db8::10")}})},
 		{name: "acme-apex", fixture: "fwd.zone", changed: true,
-			want: []Result{{Inserted: 1, Index: 15}},
-			apply: func(t *testing.T, z *Zone) []Result {
-				o := &op{t: t}
-				o.do(z.Replace(Selector{Owner: "_acme-challenge", Types: []uint16{dns.TypeTXT}}, []Entry{txt(t, "_acme-challenge", fakeToken)}, acme))
-				return o.got
-			}},
+			want:  []Result{{Inserted: 1, Index: 15, Changed: true}},
+			apply: one(acme("_acme-challenge", txt(fakeToken)))},
 		{name: "acme-apex-ttl60", fixture: "fwd.zone", golden: "acme-apex", changed: true,
-			want: []Result{{Inserted: 1, Index: 15}},
-			apply: func(t *testing.T, z *Zone) []Result {
-				// TTL 60 equals $TTL, so the file is identical to acme-apex.
-				o := &op{t: t}
-				o.do(z.Replace(Selector{Owner: "_acme-challenge", Types: []uint16{dns.TypeTXT}}, []Entry{rec(t, "_acme-challenge", 60, dns.TypeTXT, fakeToken)}, acme))
-				return o.got
-			}},
+			want:  []Result{{Inserted: 1, Index: 15, Changed: true}},
+			apply: one(acme("_acme-challenge", RR{Type: dns.TypeTXT, TTL: 60, Content: fakeToken}))}, // TTL 60 equals $TTL
 		{name: "acme-zot", fixture: "fwd.zone", changed: true,
-			want: []Result{{Matched: 1, Removed: 1, Inserted: 1, Index: 14}},
-			apply: func(t *testing.T, z *Zone) []Result {
-				o := &op{t: t}
-				o.do(z.Replace(Selector{Owner: "_acme-challenge.zot", Types: []uint16{dns.TypeTXT}}, []Entry{txt(t, "_acme-challenge.zot", fakeToken)}, acme))
-				return o.got
-			}},
+			want:  []Result{{Matched: 1, Removed: 1, Inserted: 1, Index: 14, Changed: true}},
+			apply: one(acme("_acme-challenge.zot", txt(fakeToken)))},
 		{name: "acme-wildcard-present", fixture: "fwd-placeholder.zone", changed: true, multi: true,
-			want: []Result{{Matched: 1, Removed: 1, Inserted: 1, Index: 15}, {Inserted: 1, Index: 16}},
+			want: []Result{{Matched: 1, Removed: 1, Inserted: 1, Index: 15, Changed: true}, {Inserted: 1, Index: 16, Changed: true}},
 			apply: func(t *testing.T, z *Zone) []Result {
-				o := &op{t: t}
-				o.do(z.Replace(phSel, []Entry{txt(t, "_acme-challenge", "fake/token1-helloworld")}, acme))
-				o.do(z.Replace(phSel, []Entry{txt(t, "_acme-challenge", "fake/token2-helloworld")}, acme))
-				return o.got
+				return apply(t, z, ph("fake/token1-helloworld"), ph("fake/token2-helloworld"))
 			}},
-		{name: "acme-wildcard-clean", fixture: "fwd-placeholder.zone", changed: false,
+		{name: "acme-wildcard-clean", fixture: "fwd-placeholder.zone", changed: true, multi: true,
 			want: []Result{
-				{Matched: 1, Removed: 1, Inserted: 1, Index: 15}, {Inserted: 1, Index: 16},
-				{Matched: 2, Removed: 1, Inserted: 1, Index: 16}, {Matched: 2, Removed: 1, Index: -1},
+				{Matched: 1, Removed: 1, Inserted: 1, Index: 15, Changed: true}, {Inserted: 1, Index: 16, Changed: true},
+				{Matched: 2, Removed: 1, Inserted: 1, Index: 16, Changed: true}, {Matched: 2, Removed: 1, Index: -1, Changed: true},
 			},
 			apply: func(t *testing.T, z *Zone) []Result {
-				o := &op{t: t}
-				o.do(z.Replace(phSel, []Entry{txt(t, "_acme-challenge", "fake/token1-helloworld")}, acme))
-				o.do(z.Replace(phSel, []Entry{txt(t, "_acme-challenge", "fake/token2-helloworld")}, acme))
-				ph := txt(t, "_acme-challenge", "placeholder")
-				o.do(z.Collapse("_acme-challenge", dns.TypeTXT, []string{"fake/token2-helloworld"}, ph, acmePlacement))
-				o.do(z.Collapse("_acme-challenge", dns.TypeTXT, []string{"fake/token1-helloworld"}, ph, acmePlacement))
-				return o.got
+				return apply(t, z, ph("fake/token1-helloworld"), ph("fake/token2-helloworld"),
+					Collapse{Owner: "_acme-challenge", Type: dns.TypeTXT, Drop: []string{"fake/token2-helloworld"}, Keep: "placeholder", Placement: acmePlacement},
+					Collapse{Owner: "_acme-challenge", Type: dns.TypeTXT, Drop: []string{"fake/token1-helloworld"}, Keep: "placeholder", Placement: acmePlacement})
 			}},
 		{name: "acme-collapse-duplicates", fixture: "fwd-placeholder.zone", changed: true, multi: true,
-			want: []Result{{Matched: 1, Inserted: 1, Index: 16}, {Matched: 3, Removed: 1, Index: -1}},
+			want: []Result{{Matched: 1, Inserted: 1, Index: 16, Changed: true}, {Matched: 3, Removed: 1, Index: -1, Changed: true}},
 			apply: func(t *testing.T, z *Zone) []Result {
-				o := &op{t: t}
-				ph := txt(t, "_acme-challenge", "placeholder")
-				o.do(z.AddRemove("_acme-challenge", dns.TypeTXT, []Entry{txt(t, "_acme-challenge", "x")}, nil, nil))
-				z.entries = slices.Insert(z.entries, 16, ph.WithComments("dup")) // a second placeholder, by hand
-				o.do(z.Collapse("_acme-challenge", dns.TypeTXT, []string{"absent"}, ph, acmePlacement))
-				return o.got
+				rs := apply(t, z, AddRemove{Owner: "_acme-challenge", Type: dns.TypeTXT, Add: []string{"x"}})
+				dup, _ := NewRecord("_acme-challenge", 0, dns.TypeTXT, "placeholder")
+				z.Entries = slices.Insert(z.Entries, 16, dup.WithComments("dup")) // a second placeholder, by hand
+				return append(rs, apply(t, z, Collapse{Owner: "_acme-challenge", Type: dns.TypeTXT, Drop: []string{"absent"}, Keep: "placeholder", Placement: acmePlacement})...)
 			}},
 		{name: "acme-collapse-no-txt", fixture: "fwd.zone", changed: true,
-			want: []Result{{Inserted: 1, Index: 15}},
-			apply: func(t *testing.T, z *Zone) []Result {
-				o := &op{t: t}
-				o.do(z.Collapse("_acme-challenge", dns.TypeTXT, []string{"whatever"}, txt(t, "_acme-challenge", "placeholder"), acmePlacement))
-				return o.got
-			}},
+			want:  []Result{{Inserted: 1, Index: 15, Changed: true}},
+			apply: one(Collapse{Owner: "_acme-challenge", Type: dns.TypeTXT, Drop: []string{"whatever"}, Keep: "placeholder", Placement: acmePlacement})},
 		{name: "acme-clean-zot", fixture: "fwd.zone", changed: true,
-			want: []Result{{Matched: 1, Removed: 1, Inserted: 1, Index: 14}},
-			apply: func(t *testing.T, z *Zone) []Result {
-				o := &op{t: t}
-				o.do(z.Collapse("_acme-challenge.zot", dns.TypeTXT, []string{acmeToken}, txt(t, "_acme-challenge.zot", "placeholder"), acmePlacement))
-				return o.got
-			}},
+			want:  []Result{{Matched: 1, Removed: 1, Inserted: 1, Index: 14, Changed: true}},
+			apply: one(Collapse{Owner: "_acme-challenge.zot", Type: dns.TypeTXT, Drop: []string{acmeToken}, Keep: "placeholder", Placement: acmePlacement})},
 		{name: "addremove-add", fixture: "fwd.zone", changed: true,
-			want: []Result{{Matched: 1, Inserted: 1, Index: 11}, {Matched: 2, Index: -1}},
+			want: []Result{{Matched: 1, Inserted: 1, Index: 11, Changed: true}, {Matched: 2, Index: -1}},
 			apply: func(t *testing.T, z *Zone) []Result {
-				o := &op{t: t}
-				o.do(z.AddRemove("loop", dns.TypeA, []Entry{rec(t, "loop", 0, dns.TypeA, "192.0.2.4")}, nil, nil))
-				o.do(z.AddRemove("loop", dns.TypeA, []Entry{rec(t, "loop", 0, dns.TypeA, "192.0.2.4")}, nil, nil))
-				return o.got
+				op := AddRemove{Owner: "loop", Type: dns.TypeA, Add: []string{"192.0.2.4"}}
+				return apply(t, z, op, op)
 			}},
 		{name: "addremove-remove", fixture: "fwd.zone", changed: true,
-			want: []Result{{Matched: 1, Removed: 1, Index: -1}, {Index: -1}},
+			want: []Result{{Matched: 1, Removed: 1, Index: -1, Changed: true}, {Index: -1}},
 			apply: func(t *testing.T, z *Zone) []Result {
-				o := &op{t: t}
-				o.do(z.AddRemove("loop", dns.TypeA, nil, []string{"192.0.2.1"}, nil))
-				o.do(z.AddRemove("loop", dns.TypeA, nil, []string{"192.0.2.1"}, nil))
-				return o.got
+				op := AddRemove{Owner: "loop", Type: dns.TypeA, Remove: []string{"192.0.2.1"}}
+				return apply(t, z, op, op)
 			}},
 		{name: "addremove-continuation", fixture: "fwd-placeholder.zone", changed: true, multi: true,
-			want: []Result{{Matched: 1, Removed: 1, Inserted: 1, Index: 15}, {Inserted: 1, Index: 16}, {Matched: 2, Removed: 1, Index: -1}},
+			want: []Result{{Matched: 1, Removed: 1, Inserted: 1, Index: 15, Changed: true}, {Inserted: 1, Index: 16, Changed: true}, {Matched: 2, Removed: 1, Index: -1, Changed: true}},
 			apply: func(t *testing.T, z *Zone) []Result {
-				o := &op{t: t}
-				o.do(z.Replace(phSel, []Entry{txt(t, "_acme-challenge", "tok-1")}, acme))
-				o.do(z.Replace(phSel, []Entry{txt(t, "_acme-challenge", "tok-2")}, acme))
-				o.do(z.AddRemove("_acme-challenge", dns.TypeTXT, nil, []string{"tok-2"}, nil))
-				return o.got
+				return apply(t, z, ph("tok-1"), ph("tok-2"), AddRemove{Owner: "_acme-challenge", Type: dns.TypeTXT, Remove: []string{"tok-2"}})
 			}},
 		{name: "addremove-empty-set-placement", fixture: "fwd.zone", changed: true,
-			want: []Result{{Inserted: 1, Index: 15}},
-			apply: func(t *testing.T, z *Zone) []Result {
-				o := &op{t: t}
-				o.do(z.AddRemove("_acme-challenge", dns.TypeTXT, []Entry{txt(t, "_acme-challenge", "tok")}, nil, acmePlacement))
-				return o.got
-			}},
+			want:  []Result{{Inserted: 1, Index: 15, Changed: true}},
+			apply: one(AddRemove{Owner: "_acme-challenge", Type: dns.TypeTXT, Add: []string{"tok"}, Placement: acmePlacement})},
 		{name: "delete-owner", fixture: "fwd.zone", changed: true,
-			want: []Result{{Matched: 2, Removed: 2, Index: -1}},
-			apply: func(t *testing.T, z *Zone) []Result {
-				o := &op{t: t}
-				o.do(z.DeleteOwner("loop"))
-				return o.got
-			}},
+			want:  []Result{{Matched: 2, Removed: 2, Index: -1, Changed: true}},
+			apply: one(DeleteOwner{Owner: "loop"})},
 		{name: "carried-comments", fixture: "rev.zone", changed: true, multi: true,
-			want: []Result{{Matched: 2, Removed: 2, Inserted: 2, Index: 11}},
+			want: []Result{{Matched: 2, Removed: 2, Inserted: 2, Index: 11, Changed: true}},
 			apply: func(t *testing.T, z *Zone) []Result {
 				// Comments of replaced records move to the first new record.
-				z.entries[11] = z.entries[11].WithComments("hub box")
-				z.entries[12] = z.entries[12].WithComments("old box")
-				o := &op{t: t}
-				o.do(z.Replace(Selector{Owner: "4", Types: []uint16{dns.TypePTR}},
-					[]Entry{ptr(t, "a.example.com."), ptr(t, "b.example.com.")}, all))
-				return o.got
+				z.Entries[11] = z.Entries[11].WithComments("hub box")
+				z.Entries[12] = z.Entries[12].WithComments("old box")
+				return apply(t, z, Replace{Selector: sel("4", dns.TypePTR), Records: []RR{ptr("a.example.com."), ptr("b.example.com.")}})
 			}},
+		// Insert with the default placement.
+		{name: "insert-host", fixture: "fwd.zone", changed: true,
+			want:  []Result{{Inserted: 2, Index: 12, Changed: true}}, // after loop's A/AAAA block, not between
+			apply: one(Insert{Owner: "new-host", Records: []RR{rr(dns.TypeA, "192.0.2.9"), rr(dns.TypeAAAA, "2001:db8::9")}})},
+		{name: "insert-acme", fixture: "fwd.zone", changed: true,
+			want:  []Result{{Inserted: 1, Index: 15, Changed: true}}, // joins the _acme-challenge.* group
+			apply: one(Insert{Owner: "_acme-challenge.foo", Records: []RR{txt("tok")}})},
+		{name: "insert-sibling", fixture: "fwd.zone", changed: true,
+			want:  []Result{{Inserted: 1, Index: 15, Changed: true}}, // next to the other name under zot
+			apply: one(Insert{Owner: "b.zot", Records: []RR{rr(dns.TypeA, "192.0.2.5")}})},
+		{name: "insert-apex", fixture: "fwd.zone", changed: true,
+			want:  []Result{{Inserted: 1, Index: 8, Changed: true}}, // after the apex NS records
+			apply: one(Insert{Owner: "@", Records: []RR{txt("v=spf1 -all")}})},
+		{name: "insert-duplicate", fixture: "fwd.zone", changed: true,
+			want: []Result{{Matched: 1, Inserted: 1, Index: 12, Changed: true}, {Matched: 2, Index: -1}},
+			apply: func(t *testing.T, z *Zone) []Result {
+				op := Insert{Owner: "loop", Records: []RR{rr(dns.TypeA, "192.0.2.1"), rr(dns.TypeA, "192.0.2.7")}}
+				return apply(t, z, op, op)
+			}},
+		{name: "insert-nothing", fixture: "fwd.zone", changed: false,
+			want:  []Result{{Index: -1}},
+			apply: one(Insert{Owner: "loop"})},
 	}
 }
 
@@ -273,31 +199,20 @@ func TestEditGolden(t *testing.T) {
 	for _, tc := range editCases() {
 		t.Run(tc.name, func(t *testing.T) {
 			z := openFixture(t, tc.fixture)
-			before := slices.Clone(z.entries)
+			loaded, before := z.Entries, slices.Clone(z.Entries)
 			got := tc.apply(t, z)
-			if !slices.Equal(got, tc.want) {
-				t.Errorf("results = %+v, want %+v", got, tc.want)
-			}
-			if z.Changed() != tc.changed {
-				t.Fatalf("Changed() = %v, want %v", z.Changed(), tc.changed)
-			}
+			assert.Equal(t, tc.want, got, "results")
+			require.Equal(t, tc.changed, z.Changed, "Changed")
 			data, changed, err := z.Commit(true)
-			if err != nil {
-				t.Fatalf("Commit: %v", err)
-			}
-			if changed != tc.changed || (data == nil) == tc.changed {
-				t.Fatalf("Commit = %v bytes, %v", len(data), changed)
-			}
+			require.NoError(t, err, "Commit")
+			require.Equal(t, tc.changed, changed, "Commit changed")
+			require.Equal(t, tc.changed, data != nil, "Commit = %v bytes", len(data))
 			// Purity: the entries as loaded are untouched.
-			if !EntriesEqual(before, z.original) {
-				t.Error("original entries were modified")
-			}
+			assert.True(t, EntriesEqual(before, loaded), "loaded entries were modified in place")
 			if !tc.changed {
 				// A no-op case: the result is the fixture reformatted, unbumped.
 				var buf bytes.Buffer
-				if err := Format(&buf, z.apex, z.entries, false); err != nil {
-					t.Fatal(err)
-				}
+				require.NoError(t, z.Format(&buf, false))
 				data = buf.Bytes()
 			}
 			golden := filepath.Join("testdata", "edit", cmp.Or(tc.golden, tc.name)+".golden")
@@ -307,128 +222,103 @@ func TestEditGolden(t *testing.T) {
 				}
 			}
 			wantData, err := os.ReadFile(golden)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !bytes.Equal(data, wantData) {
-				t.Errorf("output differs from %s:\n--- got ---\n%s--- want ---\n%s", golden, data, wantData)
-			}
+			require.NoError(t, err)
+			assert.Equal(t, string(wantData), string(data), "golden %s", golden)
 			if tc.multi {
 				return
 			}
 			// Idempotence: the same operation on the output changes nothing.
-			again, err := Open(data, "")
-			if err != nil {
-				t.Fatal(err)
-			}
+			again, err := Parse(data, "")
+			require.NoError(t, err)
 			tc.apply(t, again)
-			if again.Changed() {
-				var buf bytes.Buffer
-				_ = Format(&buf, again.apex, again.entries, false)
-				t.Errorf("second application changed the zone:\n%s", buf.String())
-			}
+			var buf bytes.Buffer
+			_ = again.Format(&buf, false)
+			assert.False(t, again.Changed, "second application changed the zone:\n%s", buf.String())
 		})
 	}
 }
 
-func TestOpenErrors(t *testing.T) {
-	fwd, _ := os.ReadFile("testdata/edit/fwd.zone")
-	if _, err := Open([]byte("$ORIGIN e.\n@ IN A 192.0.2.1\n"), ""); !errors.Is(err, ErrNoSOA) {
-		t.Errorf("no SOA: %v", err)
-	}
-	noSOA, _ := os.ReadFile("testdata/edit/no-soa.zone")
-	if _, err := Open(noSOA, ""); !errors.Is(err, ErrNoSOA) {
-		t.Errorf("no SOA fixture: %v", err)
-	}
-	if _, err := Open([]byte("@ IN SOA ns host 1 2 3 4 5\n"), ""); !errors.Is(err, ErrNoSOA) {
-		t.Errorf("relative SOA owner without origin: %v", err)
-	}
-	if z, err := Open([]byte("@ IN SOA ns host 1 2 3 4 5\n"), "example.org"); err != nil || z.Apex() != "example.org." {
-		t.Errorf("hint supplies the origin: %v", err)
-	}
-	if _, err := Open(fwd, "other.example.com."); !errors.Is(err, ErrApexMismatch) {
-		t.Errorf("apex mismatch: %v", err)
-	}
-	if z, err := Open(fwd, "AT.example.com"); err != nil || z.Apex() != "at.example.com." {
-		t.Errorf("matching apex: %v", err)
-	}
-	var pe *ParseError
-	if _, err := Open([]byte(")"), ""); !errors.As(err, &pe) {
-		t.Errorf("parse error: %v", err)
-	}
-	if _, err := Open([]byte("$ORIGIN e.\n@ IN SOA ns host 1 2 3 4 5\n@ IN A 192.0.2.1\n"), ""); err != nil {
-		t.Errorf("good zone: %v", err)
-	}
-}
-
-func TestEditErrors(t *testing.T) {
-	z := openFixture(t, "fwd.zone")
-	a := rec(t, "x", 0, dns.TypeA, "192.0.2.9")
-	for name, err := range map[string]error{
-		"replace outside": call(z.Replace(Selector{Owner: "www.example.net."}, []Entry{a}, ReplaceOptions{})),
-		"replace empty":   call(z.Replace(Selector{}, []Entry{a}, ReplaceOptions{})),
-		"replace anchor":  call(z.Replace(Selector{Owner: "x"}, []Entry{a}, ReplaceOptions{Placement: Placement{{Owner: "www.example.net."}}})),
-		"delete":          call(z.Delete(Selector{Owner: "example.net."})),
-		"delete owner":    call(z.DeleteOwner("www.example.net.")),
-		"addremove":       call(z.AddRemove("www.example.net.", dns.TypeA, nil, nil, nil)),
-		"addremove place": call(z.AddRemove("x", dns.TypeA, nil, nil, Placement{{Owner: "example.net."}})),
-		"collapse":        call(z.Collapse("www.example.net.", dns.TypeTXT, nil, a, nil)),
-		"collapse place":  call(z.Collapse("x", dns.TypeTXT, nil, a, Placement{{Owner: "example.net."}})),
+func TestApplyErrors(t *testing.T) {
+	fwd, err := os.ReadFile("testdata/edit/fwd.zone")
+	require.NoError(t, err)
+	_, err = Parse(fwd, "other.example.com.")
+	assert.ErrorIs(t, err, ErrApexMismatch, "apex mismatch")
+	z, err := Parse(fwd, "AT.example.com")
+	require.NoError(t, err, "matching apex")
+	require.Equal(t, "at.example.com.", z.Apex(), "matching apex")
+	a := []RR{rr(dns.TypeA, "192.0.2.9")}
+	for name, tc := range map[string]struct {
+		op   Op
+		want error
+	}{
+		"replace outside":  {Replace{Selector: sel("www.example.net."), Records: a}, ErrNotInZone},
+		"replace empty":    {Replace{Selector: Selector{}, Records: a}, ErrNotInZone},
+		"replace anchor":   {Replace{Selector: sel("x"), Records: a, Placement: Placement{{Owner: "www.example.net."}}}, ErrNotInZone},
+		"replace under":    {Replace{Selector: sel("x"), Records: a, Placement: Placement{{Under: "example.net."}}}, ErrNotInZone},
+		"delete":           {Delete{sel("example.net.")}, ErrNotInZone},
+		"delete owner":     {DeleteOwner{"www.example.net."}, ErrNotInZone},
+		"addremove":        {AddRemove{Owner: "www.example.net.", Type: dns.TypeA}, ErrNotInZone},
+		"addremove place":  {AddRemove{Owner: "x", Type: dns.TypeA, Placement: Placement{{Owner: "example.net."}}}, ErrNotInZone},
+		"collapse":         {Collapse{Owner: "www.example.net.", Type: dns.TypeTXT, Keep: "p"}, ErrNotInZone},
+		"collapse place":   {Collapse{Owner: "x", Type: dns.TypeTXT, Keep: "p", Placement: Placement{{Owner: "example.net."}}}, ErrNotInZone},
+		"insert outside":   {Insert{Owner: "example.net.", Records: a}, ErrNotInZone},
+		"insert place":     {Insert{Owner: "x", Records: a, Placement: Placement{{Owner: "example.net."}}}, ErrNotInZone},
+		"must exist":       {Replace{Selector: sel("nothere", dns.TypeA), Records: a, MustExist: true}, ErrNotFound},
+		"bad type":         {Replace{Selector: sel("x"), Records: []RR{{Type: 0, Content: "x"}}}, ErrInvalidRecord},
+		"bad insert":       {Insert{Owner: "x", Records: []RR{rr(dns.TypeA, "")}}, ErrInvalidRecord},
+		"bad add":          {AddRemove{Owner: "x", Type: dns.TypeA, Add: []string{"a ; b"}}, ErrInvalidRecord},
+		"bad keep":         {Collapse{Owner: "x", Type: dns.TypeA, Keep: "("}, ErrInvalidRecord},
+		"second op fails":  {Insert{Owner: "x", Records: a}, nil},
+		"atomic: all gone": {DeleteOwner{"loop"}, nil},
 	} {
-		if !errors.Is(err, ErrNotInZone) {
-			t.Errorf("%s: %v, want ErrNotInZone", name, err)
+		ops := []Op{tc.op}
+		if tc.want == nil {
+			ops = append(ops, DeleteOwner{"www.example.net."})
+			tc.want = ErrNotInZone
 		}
+		rs, err := z.Apply(ops...)
+		assert.ErrorIs(t, err, tc.want, "%s", name)
+		assert.Nil(t, rs, "%s: results", name)
 	}
-	if _, err := z.Replace(Selector{Owner: "nothere", Types: []uint16{dns.TypeA}}, []Entry{a}, ReplaceOptions{MustExist: true}); !errors.Is(err, ErrNotFound) {
-		t.Errorf("MustExist: %v", err)
-	}
-	if z.Changed() {
-		t.Error("failed operations must not change the zone")
-	}
+	assert.False(t, z.Changed, "failed Apply must leave the zone untouched")
+	assert.Len(t, z.Entries, 15, "failed Apply must leave the zone untouched")
 	// An absent delete is a no-op without error.
-	if r, err := z.Delete(Selector{Owner: "nothere", Types: []uint16{dns.TypeA}}); err != nil || r != (Result{Index: -1}) || z.Changed() {
-		t.Errorf("absent delete: %+v, %v", r, err)
-	}
+	rs, err := z.Apply(Delete{sel("nothere", dns.TypeA)})
+	assert.NoError(t, err, "absent delete")
+	assert.Equal(t, []Result{{Index: -1}}, rs, "absent delete")
+	assert.False(t, z.Changed, "absent delete")
 	// Commit refuses what the reference parser rejects.
-	bad := rec(t, "bad", 0, dns.TypeA, "not-an-address")
-	if _, err := z.Replace(Selector{Owner: "bad", Types: []uint16{dns.TypeA}}, []Entry{bad}, ReplaceOptions{}); err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err := z.Commit(false); !errors.Is(err, ErrUnsafeWrite) {
-		t.Errorf("Commit of a bad record: %v", err)
-	}
-	// Commit with nothing changed.
+	_, err = z.Apply(Replace{Selector: sel("bad", dns.TypeA), Records: []RR{rr(dns.TypeA, "not-an-address")}})
+	require.NoError(t, err)
+	_, _, err = z.Commit(false)
+	assert.ErrorIs(t, err, ErrUnsafeWrite, "Commit of a bad record")
+	// Commit with nothing changed, and an empty Apply.
 	y := openFixture(t, "fwd.zone")
-	if data, changed, err := y.Commit(true); data != nil || changed || err != nil {
-		t.Errorf("Commit unchanged = %v, %v, %v", data, changed, err)
-	}
+	rs, err = y.Apply()
+	assert.NoError(t, err, "empty Apply")
+	assert.Empty(t, rs, "empty Apply")
+	data, changed, err := y.Commit(true)
+	assert.NoError(t, err, "Commit unchanged")
+	assert.False(t, changed, "Commit unchanged")
+	assert.Nil(t, data, "Commit unchanged")
 }
-
-func call(_ Result, err error) error { return err }
 
 func TestQueries(t *testing.T) {
 	z := openFixture(t, "fwd.zone")
-	if got := z.Select(Selector{Owner: "loop"}); len(got) != 2 || got[0].Type() != "A" || got[1].Type() != "AAAA" {
-		t.Errorf("Select loop = %+v", got)
+	assert.NoError(t, z.Check(), "Check")
+	loop := z.Select(sel("loop"))
+	if assert.Len(t, loop, 2, "Select loop") {
+		assert.Equal(t, "A", loop[0].Type(), "Select loop")
+		assert.Equal(t, "AAAA", loop[1].Type(), "Select loop")
 	}
-	if got := z.Select(Selector{Types: []uint16{dns.TypeNS}}); len(got) != 2 {
-		t.Errorf("Select NS = %+v", got)
-	}
-	if got := z.Select(Selector{Owner: "www.example.net."}); got != nil {
-		t.Errorf("Select outside = %+v", got)
-	}
-	if got := z.Owners(Selector{Types: []uint16{dns.TypeNS}}); !slices.Equal(got, []string{"at.example.com."}) {
-		t.Errorf("Owners NS = %q", got)
-	}
-	if got := z.Owners(Selector{Types: []uint16{dns.TypeTXT}, Contents: []string{acmeToken}}); !slices.Equal(got, []string{"_acme-challenge.zot.at.example.com."}) {
-		t.Errorf("Owners TXT = %q", got)
-	}
-	if got := z.Owners(Selector{Owner: "@", Types: []uint16{dns.TypeNS}}); !slices.Equal(got, []string{"at.example.com."}) {
-		t.Errorf("Owners @ = %q", got)
-	}
-	if serial, ok := z.Serial(); !ok || serial != 1763822925 {
-		t.Errorf("Serial = %d, %v", serial, ok)
-	}
+	assert.Len(t, z.Select(sel("", dns.TypeNS)), 2, "Select NS")
+	assert.Nil(t, z.Select(sel("www.example.net.")), "Select outside")
+	assert.Equal(t, []string{"at.example.com."}, z.Owners(sel("", dns.TypeNS)), "Owners NS")
+	assert.Equal(t, []string{"_acme-challenge.zot.at.example.com."}, z.Owners(Selector{Types: []uint16{dns.TypeTXT}, Contents: []string{acmeToken}}), "Owners TXT")
+	assert.Equal(t, []string{"at.example.com."}, z.Owners(sel("@", dns.TypeNS)), "Owners @")
+	serial, ok := z.Serial()
+	assert.True(t, ok, "Serial")
+	assert.Equal(t, uint32(1763822925), serial, "Serial")
 	sets := z.RRSets()
 	wantSets := []RRSet{
 		{"at.example.com.", "SOA", 60, []string{"ns1.example.com. hostmaster.example.com. 1763822925 1H 600 1W 1D"}},
@@ -437,32 +327,32 @@ func TestQueries(t *testing.T) {
 		{"loop.at.example.com.", "AAAA", 60, []string{"2001:db8::1"}},
 		{"_acme-challenge.zot.at.example.com.", "TXT", 60, []string{acmeToken}},
 	}
-	if !slices.EqualFunc(sets, wantSets, rrsetEqual) {
-		t.Errorf("RRSets = %+v", sets)
-	}
-	if abs := z.AbsoluteOwner(z.entries[10]); abs != "loop.at.example.com." {
-		t.Errorf("AbsoluteOwner = %q", abs)
-	}
-	if abs := z.AbsoluteOwner(Entry{kind: Record}); abs != "" {
-		t.Errorf("AbsoluteOwner of ownerless = %q", abs)
-	}
-	if len(z.Entries()) != len(z.entries) {
-		t.Error("Entries")
-	}
+	assert.True(t, slices.EqualFunc(sets, wantSets, rrsetEqual), "RRSets = %+v", sets)
+	assert.Equal(t, "loop.at.example.com.", z.AbsoluteOwner(z.Entries[10]), "AbsoluteOwner")
+	assert.Empty(t, z.AbsoluteOwner(Entry{kind: Record}), "AbsoluteOwner of ownerless")
 	// Ownerless records and unknown TTL in RRSets; non-numeric serial.
-	y, err := Open([]byte("example.org. IN SOA ns host abc 2 3 4 5\n IN A 192.0.2.1\nwww 30 IN A 192.0.2.2\n"), "")
-	if err != nil {
-		t.Fatal(err)
+	y, err := Parse([]byte(`example.org. IN SOA ns host abc 2 3 4 5
+ IN A 192.0.2.1
+www 30 IN A 192.0.2.2
+`), "")
+	require.NoError(t, err)
+	_, ok = y.Serial()
+	assert.False(t, ok, "non-numeric serial")
+	sets = y.RRSets()
+	if assert.Len(t, sets, 3, "RRSets") {
+		assert.Equal(t, uint32(0), sets[1].TTL, "RRSets = %+v", sets)
+		assert.Equal(t, uint32(30), sets[2].TTL, "RRSets = %+v", sets)
 	}
-	if _, ok := y.Serial(); ok {
-		t.Error("non-numeric serial")
-	}
-	if sets := y.RRSets(); len(sets) != 3 || sets[1].TTL != 0 || sets[2].TTL != 30 {
-		t.Errorf("RRSets = %+v", sets)
-	}
-	if _, ok := (&Zone{}).Serial(); ok {
-		t.Error("no SOA serial")
-	}
+	_, ok = New("example.org.").Serial()
+	assert.False(t, ok, "no SOA serial")
+	// Hand-built entries with absolute owners are matched like relative ones.
+	w := New("example.org.")
+	abs, _ := NewRecord("www.example.org.", 0, dns.TypeA, "192.0.2.1")
+	w.Entries = append(w.Entries, abs)
+	assert.Len(t, w.Select(sel("www", dns.TypeA)), 1, "Select of an absolute owner")
+	rs := apply(t, w, Insert{Owner: "www", Records: []RR{rr(dns.TypeA, "192.0.2.1")}})
+	assert.False(t, rs[0].Changed, "Insert of a present absolute record = %+v", rs)
+	assert.Equal(t, 1, rs[0].Matched, "Insert of a present absolute record = %+v", rs)
 }
 
 func rrsetEqual(a, b RRSet) bool {
@@ -471,10 +361,15 @@ func rrsetEqual(a, b RRSet) bool {
 
 // Spec (edit) 6.3.
 func TestContentMatching(t *testing.T) {
-	z, err := Open([]byte("$ORIGIN example.org.\n@ IN SOA ns host 1 2 3 4 5\n@ IN MX 10 mx.example.com.\nt IN TXT \"a b\"\nu IN TXT \"a\" \"b\"\nc IN CAA 0 issue \"ca.example\"\np IN PTR host.example.com.\n"), "")
-	if err != nil {
-		t.Fatal(err)
-	}
+	z, err := Parse([]byte(`$ORIGIN example.org.
+@ IN SOA ns host 1 2 3 4 5
+@ IN MX 10 mx.example.com.
+t IN TXT "a b"
+u IN TXT "a" "b"
+c IN CAA 0 issue "ca.example"
+p IN PTR host.example.com.
+`), "")
+	require.NoError(t, err)
 	for _, tc := range []struct {
 		owner   string
 		rtype   uint16
@@ -491,9 +386,7 @@ func TestContentMatching(t *testing.T) {
 		{"P", dns.TypePTR, "host.example.com.", true},
 	} {
 		got := len(z.Select(Selector{Owner: tc.owner, Types: []uint16{tc.rtype}, Contents: []string{tc.content}})) == 1
-		if got != tc.want {
-			t.Errorf("%s %d %q: match = %v, want %v", tc.owner, tc.rtype, tc.content, got, tc.want)
-		}
+		assert.Equal(t, tc.want, got, "%s %d %q: match", tc.owner, tc.rtype, tc.content)
 	}
 	for _, tc := range []struct {
 		rtype    uint16
@@ -506,100 +399,189 @@ func TestContentMatching(t *testing.T) {
 		{dns.TypeMX, "10 mx ; comment", "10 mx ; comment"},
 		{dns.TypeTXT, `"keeps quotes"`, `"keeps quotes"`},
 	} {
-		if got := normalizeContent(tc.rtype, tc.in); got != tc.want {
-			t.Errorf("normalizeContent(%d, %q) = %q, want %q", tc.rtype, tc.in, got, tc.want)
-		}
+		assert.Equal(t, tc.want, normalizeContent(tc.rtype, tc.in), "normalizeContent(%d, %q)", tc.rtype, tc.in)
 	}
 }
 
-func TestPlacementIndex(t *testing.T) {
+func TestPlacement(t *testing.T) {
 	z := openFixture(t, "fwd.zone")
+	n := len(z.Entries)
 	for _, tc := range []struct {
 		p    Placement
 		want int
 	}{
-		{nil, len(z.entries)},
-		{Placement{{Owner: "nothere"}}, len(z.entries)},
+		{nil, n},
+		{Placement{{Owner: "nothere"}}, n},
 		{Placement{{Owner: "loop"}}, 12},
 		{Placement{{Owner: "nothere"}, {Prefix: "_ACME-challenge."}}, 15},
 		{Placement{{Prefix: "_acme-challenge."}, {Owner: "loop"}}, 15},
-		{Placement{{}}, len(z.entries)},
+		{Placement{{}}, n},
 		{Placement{{Owner: "@"}}, 8},
+		{Placement{{Type: dns.TypeNS}}, 8},
+		{Placement{{Type: dns.TypeA}}, 12}, // after loop's AAAA too
+		{Placement{{Type: dns.TypeTXT}}, 15},
+		{Placement{{Type: dns.TypeMX}}, n},
+		{Placement{{Under: "zot"}}, 15},
+		{Placement{{Under: "ZOT.at.example.com."}}, 15},
+		{Placement{{Under: "@"}}, 15},
+		{Placement{{Under: "loop", Type: dns.TypeAAAA}}, 12},
+		{Placement{{Under: "loop", Type: dns.TypeTXT}}, n},
+		{Placement{{Owner: "loop", Prefix: "x"}}, n},
 	} {
 		p, err := z.placement(tc.p)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if got := placementIndex(z.entries, p); got != tc.want {
-			t.Errorf("placementIndex(%+v) = %d, want %d", tc.p, got, tc.want)
-		}
+		require.NoError(t, err)
+		assert.Equal(t, tc.want, z.placementIndex(z.Entries, p), "placementIndex(%+v)", tc.p)
 	}
+	for _, tc := range []struct {
+		owner string
+		want  Placement
+	}{
+		{"@", Placement{{Owner: "@"}, {Type: dns.TypeA}}},
+		{"www", Placement{{Owner: "www"}, {Under: "www"}, {Type: dns.TypeA}}},
+		{"_acme-challenge.zot.at.example.com.", Placement{{Owner: "_acme-challenge.zot"}, {Prefix: "_acme-challenge."}, {Under: "zot"}, {Type: dns.TypeA}}},
+		{`a\.b.c`, Placement{{Owner: `a\.b.c`}, {Prefix: `a\.b.`}, {Under: "c"}, {Type: dns.TypeA}}},
+		{"example.net.", Placement{{Type: dns.TypeA}}},
+	} {
+		assert.Equal(t, tc.want, z.DefaultPlacement(tc.owner, dns.TypeA), "DefaultPlacement(%q)", tc.owner)
+	}
+	assert.False(t, underRel(`a\.zot`, "zot"), "underRel")
+	assert.True(t, underRel("a.zot", "zot"), "underRel")
+	assert.False(t, underRel("azot", "zot"), "underRel")
+}
+
+func TestEntryConstructors(t *testing.T) {
+	z := New("example.org.")
+	for _, tc := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"$origin", []string{"sub"}, "$ORIGIN sub."},
+		{"$TTL", []string{"1h"}, "$TTL 1h"},
+		{"$INCLUDE", []string{`"a b.zone"`, "sub"}, `$INCLUDE "a b.zone" sub`},
+		{"$GENERATE", []string{"1-10", "host-$", "A", "192.0.2.$"}, "$GENERATE 1-10 host-$ A 192.0.2.$"},
+	} {
+		e, err := NewDirective(tc.name, tc.args...)
+		require.NoError(t, err, "NewDirective(%q)", tc.name)
+		assert.Equal(t, tc.want, directiveText(e), "NewDirective(%q, %q)", tc.name, tc.args)
+		z.Entries = append(z.Entries, e)
+	}
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{"$NOPE", []string{"x"}},
+		{"$TTL", nil},
+		{"$TTL", []string{"soon"}},
+		{"$ORIGIN", []string{"a b"}},
+		{"$ORIGIN", []string{"a\nb IN A 192.0.2.1"}},
+		{"$ORIGIN", []string{"a ; comment"}},
+		{"$ORIGIN", []string{"("}},
+		{"$ORIGIN", []string{"\"open"}},
+	} {
+		_, err := NewDirective(tc.name, tc.args...)
+		assert.ErrorIs(t, err, ErrInvalidEntry, "NewDirective(%q, %q)", tc.name, tc.args)
+	}
+	for in, want := range map[string]string{"note": "; note", ";; two": ";; two", "": ";", "trailing  ": "; trailing"} {
+		e, err := NewComment(in)
+		assert.NoError(t, err, "NewComment(%q)", in)
+		assert.Equal(t, Comment, e.Kind(), "NewComment(%q)", in)
+		assert.Equal(t, want, e.Comment(), "NewComment(%q)", in)
+	}
+	for _, in := range []string{"a\nb", "a\rb", "a\x00b"} {
+		_, err := NewComment(in)
+		assert.ErrorIs(t, err, ErrInvalidEntry, "NewComment(%q)", in)
+	}
+	// A file built from nothing commits and verifies.
+	z = New("example.org.")
+	z.Entries = append(z.Entries,
+		must(NewDirective("$ORIGIN", "example.org.")),
+		must(NewDirective("$TTL", "1h")),
+		must(NewComment("built by hand")),
+		must(NewRecord("@", 0, dns.TypeSOA, "ns1 hostmaster 2024010100 1h 10m 1w 1h")),
+		must(NewRecord("@", 0, dns.TypeNS, "ns1")),
+	)
+	_, changed, err := z.Commit(false)
+	require.NoError(t, err, "Commit of an unflagged new zone")
+	require.False(t, changed, "Commit of an unflagged new zone")
+	z.Changed = true
+	data, changed, err := z.Commit(false)
+	require.NoError(t, err, "Commit")
+	require.True(t, changed, "Commit")
+	want := `$ORIGIN example.org.
+$TTL 1h
+; built by hand
+@ IN SOA ns1 hostmaster (
+    2024010100 ; serial  Mon, 01 Jan 2024 #00
+    1h         ; refresh
+    10m        ; retry
+    1w         ; expire
+    1h         ; minimum
+)
+  IN NS  ns1
+`
+	assert.Equal(t, want, string(data))
+	assert.NoError(t, z.Check(), "Check")
+}
+
+func must(e Entry, err error) Entry {
+	if err != nil {
+		panic(err)
+	}
+	return e
 }
 
 // Properties over generated zones (edit spec section 7).
 func TestEditProperties(t *testing.T) {
 	r := newRand(7, 8)
 	for i := range 200 {
-		text := "$ORIGIN example.org.\n@ IN SOA ns host 1 2 3 4 5\n" + genZone(r)
-		z, err := Open([]byte(text), "")
+		text := `$ORIGIN example.org.
+@ IN SOA ns host 1 2 3 4 5
+` + genZone(r)
+		z, err := Parse([]byte(text), "")
 		if err != nil {
 			continue // genZone may produce a second SOA under another origin
 		}
 		before := z.RRSets()
-		comments := allComments(z.entries)
-		sets := z.RRSets()
-		if len(sets) < 2 {
+		comments := allComments(z.Entries)
+		if len(before) < 2 {
 			continue
 		}
-		set := sets[1+r.IntN(len(sets)-1)]
-		rtype := typeNames[set.Type]
-		sel := Selector{Owner: set.Owner, Types: []uint16{rtype}}
-
-		// Replace then Delete removes exactly that set.
+		set := before[1+r.IntN(len(before)-1)]
 		if !InZone(set.Owner, z.apex) {
 			continue
 		}
-		rep := rec(t, "@", 0, dns.TypeTXT, "x")
-		if _, err := z.Replace(sel, []Entry{rep}, ReplaceOptions{Mode: ReplaceAll}); err != nil {
-			t.Fatalf("#%d Replace: %v\n%s", i, err, text)
-		}
-		if _, err := z.Delete(Selector{Owner: set.Owner, Types: []uint16{dns.TypeTXT}, Contents: []string{"x"}}); err != nil {
-			t.Fatal(err)
-		}
-		wantSets := slices.DeleteFunc(slices.Clone(before), func(s RRSet) bool { return s.Owner == set.Owner && s.Type == set.Type })
-		if !slices.EqualFunc(z.RRSets(), wantSets, rrsetEqual) {
-			t.Fatalf("#%d Replace+Delete: got %+v, want %+v\n%s", i, z.RRSets(), wantSets, text)
-		}
+		rtype := typeNames[set.Type]
+		s := sel(set.Owner, rtype)
 
-		// AddRemove add then remove restores the sets.
-		y, _ := Open([]byte(text), "")
-		add := rec(t, "@", 0, dns.TypeA, "192.0.2.77")
-		if _, err := y.AddRemove(set.Owner, dns.TypeA, []Entry{add}, nil, nil); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := y.AddRemove(set.Owner, dns.TypeA, nil, []string{"192.0.2.77"}, nil); err != nil {
-			t.Fatal(err)
-		}
-		if !slices.EqualFunc(y.RRSets(), before, rrsetEqual) || y.Changed() {
-			t.Fatalf("#%d AddRemove round trip changed the zone\n%s", i, text)
-		}
+		// Replace then Delete removes exactly that set.
+		_, err = z.Apply(Replace{Selector: s, Records: []RR{rr(dns.TypeTXT, "x")}},
+			Delete{Selector{Owner: set.Owner, Types: []uint16{dns.TypeTXT}, Contents: []string{"x"}}})
+		require.NoError(t, err, "#%d Replace+Delete\n%s", i, text)
+		wantSets := slices.DeleteFunc(slices.Clone(before), func(s RRSet) bool { return s.Owner == set.Owner && s.Type == set.Type })
+		require.True(t, slices.EqualFunc(z.RRSets(), wantSets, rrsetEqual), "#%d Replace+Delete: got %+v, want %+v\n%s", i, z.RRSets(), wantSets, text)
+
+		// AddRemove add then remove restores the sets; so does Insert then Delete.
+		y, _ := Parse([]byte(text), "")
+		_, err = y.Apply(AddRemove{Owner: set.Owner, Type: dns.TypeA, Add: []string{"192.0.2.77"}},
+			AddRemove{Owner: set.Owner, Type: dns.TypeA, Remove: []string{"192.0.2.77"}},
+			Insert{Owner: set.Owner, Records: []RR{rr(dns.TypeA, "192.0.2.78")}},
+			Delete{Selector{Owner: set.Owner, Types: []uint16{dns.TypeA}, Contents: []string{"192.0.2.78"}}})
+		require.NoError(t, err, "#%d AddRemove/Insert\n%s", i, text)
+		require.True(t, slices.EqualFunc(y.RRSets(), before, rrsetEqual), "#%d AddRemove/Insert round trip changed the RRsets\n%s", i, text)
 
 		// Carried comments: a replace with insertion keeps every comment.
-		x, _ := Open([]byte(text), "")
-		if _, err := x.Replace(sel, []Entry{rep}, ReplaceOptions{Mode: ReplaceAll}); err != nil {
-			t.Fatal(err)
-		}
-		after := allComments(x.entries)
+		x, _ := Parse([]byte(text), "")
+		_, err = x.Apply(Replace{Selector: s, Records: []RR{rr(dns.TypeTXT, "x")}})
+		require.NoError(t, err, "#%d Replace\n%s", i, text)
+		after := allComments(x.Entries)
 		for _, c := range comments {
 			// Carried comments are joined onto one line, so look inside.
-			if !slices.ContainsFunc(after, func(a string) bool { return strings.Contains(a, c) }) {
-				t.Fatalf("#%d comment %q lost by Replace\n%s", i, c, text)
-			}
+			require.True(t, slices.ContainsFunc(after, func(a string) bool { return strings.Contains(a, c) }), "#%d comment %q lost by Replace\n%s", i, c, text)
 		}
 		// And the result commits safely.
-		if _, _, err := x.Commit(true); err != nil {
-			t.Fatalf("#%d Commit: %v\n%s", i, err, text)
-		}
+		_, _, err = x.Commit(true)
+		require.NoError(t, err, "#%d Commit\n%s", i, text)
 	}
 }
 
@@ -615,34 +597,29 @@ func FuzzEdit(f *testing.F) {
 	fwd, _ := os.ReadFile("testdata/edit/fwd.zone")
 	f.Add(fwd, "loop", "192.0.2.9", uint16(dns.TypeA))
 	f.Add(fwd, "_acme-challenge", "tok", uint16(dns.TypeTXT))
-	f.Add([]byte("@ IN SOA ns host 1 2 3 4 5\n"), "@", "x", uint16(dns.TypeMX))
+	f.Add([]byte(`@ IN SOA ns host 1 2 3 4 5
+`), "@", "x", uint16(dns.TypeMX))
 	f.Fuzz(func(t *testing.T, data []byte, owner, content string, rtype uint16) {
-		z, err := Open(data, "")
+		z, err := Parse(data, "")
 		if err != nil {
 			return
 		}
-		var records []Entry
-		if e, err := NewRecord(owner, 0, rtype, content); err == nil {
-			records = []Entry{e}
-		}
-		sel := Selector{Owner: owner, Types: []uint16{rtype}, Contents: []string{content}}
-		p := Placement{{Owner: owner}, {Prefix: content}}
-		_, _ = z.Replace(sel, records, ReplaceOptions{Mode: ReplaceAll, Placement: p})
-		_, _ = z.Replace(Selector{Owner: owner}, records, ReplaceOptions{Mode: ReplaceFirst, MustExist: true})
-		_, _ = z.AddRemove(owner, rtype, records, []string{content}, p)
-		if len(records) > 0 {
-			_, _ = z.Collapse(owner, rtype, []string{content}, records[0], p)
-		}
-		_, _ = z.Delete(sel)
-		_, _ = z.DeleteOwner(owner)
+		record := []RR{{Type: rtype, Content: content}}
+		s := Selector{Owner: owner, Types: []uint16{rtype}, Contents: []string{content}}
+		p := Placement{{Owner: owner}, {Prefix: content}, {Under: owner}, {Type: rtype}}
+		_, _ = z.Apply(Replace{Selector: s, Records: record, Placement: p})
+		_, _ = z.Apply(Replace{Selector: Selector{Owner: owner}, Records: record, Mode: ReplaceFirst, MustExist: true})
+		_, _ = z.Apply(Insert{Owner: owner, Records: record})
+		_, _ = z.Apply(AddRemove{Owner: owner, Type: rtype, Add: []string{content}, Remove: []string{content}, Placement: p})
+		_, _ = z.Apply(Collapse{Owner: owner, Type: rtype, Drop: []string{content}, Keep: content, Placement: p})
+		_, _ = z.Apply(Delete{s}, DeleteOwner{owner})
 		_ = z.Select(Selector{})
-		_ = z.Owners(sel)
+		_ = z.Owners(s)
 		_ = z.RRSets()
 		_, _ = z.Serial()
-		if _, _, err := z.Commit(true); err != nil && !errors.Is(err, ErrUnsafeWrite) {
-			if !strings.Contains(err.Error(), "SOA has") {
-				t.Fatalf("Commit: %v", err)
-			}
+		_ = z.Check()
+		if _, _, err := z.Commit(true); err != nil && !errors.Is(err, ErrUnsafeWrite) && !strings.Contains(err.Error(), "SOA has") {
+			require.NoError(t, err, "Commit")
 		}
 	})
 }

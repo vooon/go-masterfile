@@ -3,28 +3,9 @@
 package masterfile
 
 import (
-	"iter"
 	"slices"
 	"strings"
 )
-
-// File is a parsed zone file: a flat list of entries in file order.
-// Trailing bytes that formed no entry are dropped; nothing else is lost.
-type File struct {
-	Entries []Entry
-}
-
-// Records iterates over the Record entries of the file with their index in
-// Entries.
-func (f *File) Records() iter.Seq2[int, Entry] {
-	return func(yield func(int, Entry) bool) {
-		for i, e := range f.Entries {
-			if e.kind == Record && !yield(i, e) {
-				return
-			}
-		}
-	}
-}
 
 // Kind classifies an entry.
 type Kind int
@@ -113,8 +94,9 @@ func (e Entry) Name() string { return e.name }
 // Args returns a copy of a Directive entry's arguments.
 func (e Entry) Args() []Field { return cloneFields(e.args) }
 
-// Owner returns a Record entry's owner as written (or as set by
-// [File.ResolveOwners]); "" when the owner is inherited and unresolved.
+// Owner returns a Record entry's owner: relative to the apex for an entry
+// that came from [Parse], as given for one built by hand; "" when the
+// owner is inherited from the previous record and could not be resolved.
 func (e Entry) Owner() string { return e.owner }
 
 // TTL returns a Record entry's explicit TTL and whether it has one.

@@ -19,8 +19,8 @@ var (
 
 // Op is one editing operation, applied with [Zone.Apply]. The operations
 // are [Replace], [Insert], [Delete], [DeleteOwner], [AddRemove] and
-// [Collapse]: plain values that can be built up, logged and applied
-// together.
+// [Collapse]: plain struct values that can be built up, logged and applied
+// together. Nothing outside this package implements Op.
 type Op interface {
 	apply(z *Zone) (Result, error)
 }
@@ -311,7 +311,8 @@ func (z *Zone) DefaultPlacement(owner string, rtype uint16) Placement {
 	return append(p, Anchor{Type: rtype})
 }
 
-// Replace replaces the records matching Selector with Records. The first
+// Replace is the [Op] that replaces the records matching Selector with
+// Records. The first
 // match is replaced in place by all of Records (zero or more); every later
 // match is dropped (ReplaceAll) or kept (ReplaceFirst). Comments of dropped
 // matches are carried onto the first inserted record. Without a match,
@@ -383,7 +384,8 @@ func (op Replace) apply(z *Zone) (Result, error) {
 	return res, nil
 }
 
-// Insert adds Records under Owner, skipping those the zone already holds
+// Insert is the [Op] that adds Records under Owner, skipping those the zone
+// already holds
 // (same owner, type and content). They go per Placement, or per
 // [Zone.DefaultPlacement] for the first record's type when Placement is
 // empty. Nothing else is touched.
@@ -429,8 +431,8 @@ func (op Insert) apply(z *Zone) (Result, error) {
 	return res, nil
 }
 
-// Delete drops every record matching Selector; an absent record is a
-// no-op. It is [Replace] with no records and ReplaceAll.
+// Delete is the [Op] that drops every record matching Selector; an absent
+// record is a no-op. It is [Replace] with no records and ReplaceAll.
 type Delete struct {
 	Selector
 }
@@ -439,8 +441,8 @@ func (op Delete) apply(z *Zone) (Result, error) {
 	return Replace{Selector: op.Selector, Mode: ReplaceAll}.apply(z)
 }
 
-// DeleteOwner drops every record with that owner, of any type, together
-// with their comments.
+// DeleteOwner is the [Op] that drops every record with that owner, of any
+// type, together with their comments.
 type DeleteOwner struct {
 	Owner string
 }
@@ -463,7 +465,8 @@ func (op DeleteOwner) apply(z *Zone) (Result, error) {
 	return res, nil
 }
 
-// AddRemove edits one RRset (Owner and Type) in place, as DNS UPDATE does:
+// AddRemove is the [Op] that edits one RRset (Owner and Type) in place, as
+// DNS UPDATE does:
 // entries whose content is in Remove are dropped; then each content of Add
 // that is still absent (and not a duplicate of an earlier one) is inserted
 // as a record with TTL right after the last remaining entry of the set, or
@@ -533,7 +536,8 @@ func (op AddRemove) apply(z *Zone) (Result, error) {
 	return res, nil
 }
 
-// Collapse leaves the RRset (Owner and Type) with exactly one record of
+// Collapse is the [Op] that leaves the RRset (Owner and Type) with exactly
+// one record of
 // content Keep and none of the contents in Drop; other contents are
 // untouched. Entries with a content in Drop are removed; of the entries
 // equal to Keep the first stays and later ones are removed; if none stayed,

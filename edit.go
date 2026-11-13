@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 )
 
@@ -29,9 +30,14 @@ type Op interface {
 // builds the entry with [NewRecord], so the security boundary holds for
 // values that come from network clients.
 type RR struct {
-	Type    uint16
-	TTL     uint32 // 0: no explicit TTL
-	Content string // PowerDNS content form: rdata fields, TXT text as is
+	Type uint16
+	TTL  uint32 // 0: no explicit TTL
+	// Content is the PowerDNS content form: rdata fields, TXT text as is.
+	// It is written into the file as given, so a name in it should be
+	// absolute: a relative one is read against the $ORIGIN in force where
+	// the record lands, which in a file with several $ORIGIN lines need
+	// not be the apex.
+	Content string
 }
 
 // entry builds the record for owner (already normalised).
@@ -99,7 +105,7 @@ type Anchor struct {
 // decides: the new records go right after its last match, and after the
 // records that follow it with the same owner, so an owner's block is never
 // split. With no match, or an empty Placement, they are appended to the
-// end. [Zone.DefaultPlacement] builds the list a human would use.
+// end, before any blank line the file ends with. [Zone.DefaultPlacement] builds the list a human would use.
 type Placement []Anchor
 
 // Apply runs the operations in order and reports what each did. It is
@@ -160,7 +166,7 @@ func (z *Zone) editOwner(owner string) (string, error) {
 // CAA record). A string that does not tokenise cleanly only gets its
 // whitespace runs collapsed.
 func normalizeContent(rtype uint16, s string) string {
-	if n, ok := typeByNumber[rtype]; ok && (n == "TXT" || n == "SPF") {
+	if isTextType(rtype) {
 		return s
 	}
 	if toks, err := tokenise(s); err == nil {
@@ -212,6 +218,17 @@ func (z *Zone) matcher(sel Selector, owner string) func(e Entry) bool {
 	}
 }
 
+// spelling returns owner (apex-relative) as the first record of the zone
+// with that owner spells it, or owner itself when there is none.
+func (z *Zone) spelling(owner string) string {
+	for _, e := range z.Entries {
+		if e.kind == Record && e.owner != "" && NameEqual(z.relOwner(e), owner) {
+			return z.relOwner(e)
+		}
+	}
+	return owner
+}
+
 // inSet reports whether e is a Record of the (owner, type) set.
 func (z *Zone) inSet(owner string, rtype uint16, e Entry) bool {
 	return e.kind == Record && e.rtype == rtype && NameEqual(z.relOwner(e), owner)
@@ -255,7 +272,13 @@ func (z *Zone) placementIndex(entries []Entry, p Placement) int {
 		}
 		return last + 1
 	}
-	return len(entries)
+	// The end, but before the blank line a file may end with: a record
+	// appended after it would be cut off from the records above.
+	end := len(entries)
+	for end > 0 && entries[end-1].kind == Blank {
+		end--
+	}
+	return end
 }
 
 // underRel reports whether the apex-relative owner rel is parent or below
@@ -394,8 +417,9 @@ func (op Replace) apply(z *Zone) (Result, error) {
 }
 
 // Insert is the [Op] that adds Records under Owner, skipping those the zone
-// already holds
-// (same owner, type and content). They go per Placement, or per
+// already holds (same owner, type and content) and those that repeat an
+// earlier one of Records. The owner is spelled as the zone already spells
+// it. They go per Placement, or per
 // [Zone.DefaultPlacement] for the first record's type when Placement is
 // empty. Nothing else is touched.
 type Insert struct {
@@ -424,17 +448,20 @@ func (op Insert) apply(z *Zone) (Result, error) {
 	if p, err = z.placement(p); err != nil {
 		return Result{}, err
 	}
-	toAdd := slices.DeleteFunc(records, func(r Entry) bool {
-		dup := slices.ContainsFunc(z.Entries, func(e Entry) bool { return z.inSet(o, r.rtype, e) && e.Content() == r.Content() })
-		if dup {
+	var toAdd []Entry
+	for _, r := range records {
+		same := func(e Entry) bool { return z.inSet(o, r.rtype, e) && e.Content() == r.Content() }
+		switch {
+		case slices.ContainsFunc(z.Entries, same):
 			res.Matched++
+		case !slices.ContainsFunc(toAdd, same): // not a repeat of an earlier one
+			toAdd = append(toAdd, r)
 		}
-		return dup
-	})
+	}
 	out := slices.Clone(z.Entries)
 	if len(toAdd) > 0 {
 		res.Index, res.Inserted = z.placementIndex(out, p), len(toAdd)
-		out = slices.Insert(out, res.Index, toAdd...)
+		out = slices.Insert(out, res.Index, reown(toAdd, z.spelling(o))...)
 	}
 	res.Changed = z.set(out)
 	return res, nil
@@ -480,7 +507,8 @@ func (op DeleteOwner) apply(z *Zone) (Result, error) {
 // that is still absent (and not a duplicate of an earlier one) is inserted
 // as a record with TTL right after the last remaining entry of the set, or
 // per Placement when the set is empty. Adding a present value and removing
-// an absent one are no-ops.
+// an absent one are no-ops. Comments of removed entries are carried onto
+// the first added record; with nothing added they go with the entries.
 type AddRemove struct {
 	Owner     string
 	Type      uint16
@@ -506,6 +534,7 @@ func (op AddRemove) apply(z *Zone) (Result, error) {
 	res := Result{Index: -1}
 	out := make([]Entry, 0, len(z.Entries)+len(op.Add))
 	present := map[string]bool{}
+	var carried []string
 	last := -1
 	for _, e := range z.Entries {
 		if !z.inSet(o, op.Type, e) {
@@ -517,6 +546,7 @@ func (op AddRemove) apply(z *Zone) (Result, error) {
 		c := e.Content()
 		if removeSet[c] {
 			res.Removed++
+			carried = append(carried, e.Comments()...)
 			continue
 		}
 		present[c] = true
@@ -539,6 +569,7 @@ func (op AddRemove) apply(z *Zone) (Result, error) {
 		if last >= 0 {
 			res.Index = last + 1
 		}
+		toAdd[0] = toAdd[0].WithComments(carried...)
 		out = slices.Insert(out, res.Index, toAdd...)
 	}
 	res.Changed = z.set(out)
@@ -660,8 +691,9 @@ type RRSet struct {
 	Contents []string // in file order
 }
 
-// RRSets groups the records by owner and type in order of first
-// appearance, with the $TTL in force applied to records without an
+// RRSets groups the records by owner and numeric type (a record written
+// "TYPE1" belongs with the A records, and the set is named "A") in order of
+// first appearance, with the $TTL in force applied to records without an
 // explicit TTL. Records without an owner are skipped.
 func (z *Zone) RRSets() []RRSet {
 	var (
@@ -675,13 +707,17 @@ func (z *Zone) RRSets() []RRSet {
 			continue
 		}
 		owner := z.AbsoluteOwner(e)
-		key := foldASCII(owner) + "\x00" + e.typ
+		key := foldASCII(owner) + "\x00" + strconv.Itoa(int(e.rtype))
 		i, ok := index[key]
 		if !ok {
 			secs, _ := ttl.effective(e)
 			i = len(sets)
 			index[key] = i
-			sets = append(sets, RRSet{Owner: owner, Type: e.typ, TTL: secs})
+			name, known := typeByNumber[e.rtype]
+			if !known {
+				name = e.typ
+			}
+			sets = append(sets, RRSet{Owner: owner, Type: name, TTL: secs})
 		}
 		sets[i].Contents = append(sets[i].Contents, e.Content())
 	}

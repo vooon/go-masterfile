@@ -69,7 +69,8 @@ type Entry struct {
 	name    string  // Directive: "$ORIGIN" etc., upper-cased
 	args    []Field // Directive arguments
 	owner   string  // Record: as written, "" when inherited/unknown
-	ttl     TTL     // Record: valid when hasTTL
+	form    ownerForm
+	ttl     TTL // Record: valid when hasTTL
 	hasTTL  bool
 	class   string // Record: upper-cased, "" when absent
 	typ     string // Record: upper-cased
@@ -78,6 +79,19 @@ type Entry struct {
 	head    []string // comments after "(" before the first field
 	tail    []string // comments after the last field / end of line
 }
+
+// ownerForm records how a record's owner was written in the parsed text.
+// It only matters where the origin in force is the root: there a name that
+// was written relative is written back without its trailing dot and one
+// that was written absolute keeps it, so the file means the same under
+// whatever origin a name server later loads it with.
+type ownerForm uint8
+
+const (
+	formUnknown  ownerForm = iota // built by hand or by an operation
+	formRelative                  // written relative, or "@"
+	formAbsolute                  // written with a trailing dot
+)
 
 // Kind returns the entry kind.
 func (e Entry) Kind() Kind { return e.kind }
@@ -195,8 +209,35 @@ func (e Entry) Content() string {
 	return b.String()
 }
 
+// Numeric types this package treats specially. A record written as
+// "TYPE16" is the same type as one written "TXT", so every decision keys
+// on the number, never on the spelling.
+const (
+	typeSOA     uint16 = 6
+	typeTXT     uint16 = 16
+	typeDS      uint16 = 43
+	typeRRSIG   uint16 = 46
+	typeDNSKEY  uint16 = 48
+	typeCDS     uint16 = 59
+	typeCDNSKEY uint16 = 60
+	typeSPF     uint16 = 99
+	typeCAA     uint16 = 257
+)
+
+// isType reports whether the record is of type t with rdata in the type's
+// own presentation form. The RFC 3597 generic form ("\# 4 c0000201") is
+// opaque whatever the type: it gets no type-specific treatment.
+func (e Entry) isType(t uint16) bool { return e.rtype == t && !e.generic() }
+
+// generic reports whether the rdata is in the RFC 3597 generic form.
+func (e Entry) generic() bool {
+	return len(e.fields) > 0 && !e.fields[0].Quoted && e.fields[0].Raw == `\#`
+}
+
 // isText reports whether the record's rdata is character-strings (TXT, SPF).
-func (e Entry) isText() bool { return e.typ == "TXT" || e.typ == "SPF" }
+func (e Entry) isText() bool { return isTextType(e.rtype) && !e.generic() }
+
+func isTextType(t uint16) bool { return t == typeTXT || t == typeSPF }
 
 // WithComments returns a copy of the entry with the comments appended to its
 // last line as one comment joined by single spaces. Comments without a
@@ -250,6 +291,6 @@ func oneLine(s string) string {
 // empty name clears the owner so it is inherited. It is the caller's job
 // to pass a single owner item (see [NewRecord]).
 func (e Entry) WithOwner(name string) Entry {
-	e.owner = name
+	e.owner, e.form = name, formUnknown
 	return e
 }

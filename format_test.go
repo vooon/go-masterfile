@@ -233,9 +233,9 @@ a IN A 1
  IN A 192.0.2.2
 example.org. IN MX 10 mx
 `,
-			`www         IN A  192.0.2.1
-            IN A  192.0.2.2
-example.org IN MX 10 mx
+			`www          IN A  192.0.2.1
+             IN A  192.0.2.2
+example.org. IN MX 10 mx
 `},
 		{"crlf input",
 			"$ORIGIN e.\r\na IN A 1\r\n",
@@ -266,6 +266,9 @@ b IN A 2
 		{"long key data with an escape or a quote is not split",
 			"$ORIGIN e.\na IN DNSKEY 0 0 0 " + strings.Repeat("0", 50) + `\0\0\0` + "\nb IN DNSKEY 0 0 0 \"" + strings.Repeat("0", 60) + "\"\n",
 			"$ORIGIN e.\na IN DNSKEY 0 0 0 " + strings.Repeat("0", 50) + `\0\0\0` + "\nb IN DNSKEY 0 0 0 \"" + strings.Repeat("0", 60) + "\"\n"},
+		{"unquoted CAA value with an escape stays verbatim",
+			"$ORIGIN e.\na IN CAA 0 issue ca\\.example\nb IN CAA 0 issue ca.example\n",
+			"$ORIGIN e.\na IN CAA 0 issue ca\\.example\nb IN CAA 0 issue \"ca.example\"\n"},
 		{"empty input",
 			"", ""},
 	} {

@@ -19,7 +19,7 @@ const (
 // longKeys lists the types whose trailing data is split into pieces inside
 // parentheses when long, with the number of leading fields kept on the
 // record line.
-var longKeys = map[string]int{"DNSKEY": 3, "CDNSKEY": 3, "DS": 3, "CDS": 3, "RRSIG": 8}
+var longKeys = map[uint16]int{typeDNSKEY: 3, typeCDNSKEY: 3, typeDS: 3, typeCDS: 3, typeRRSIG: 8}
 
 // lineWriter writes lines without trailing blanks, each ending in LF, and
 // collapses blank lines: at most one between entries, none at the start or
@@ -81,13 +81,13 @@ func plan(origin, apex string, entries []Entry) layout {
 		if e.kind != Record {
 			havePrev = false
 			ttl.apply(e)
-			if e.kind == Directive && e.name == "$ORIGIN" && len(e.args) > 0 {
-				origin = Fqdn(e.args[0].Value)
+			if o, ok := originName(e); ok {
+				origin = o
 			}
 			continue
 		}
 		if e.owner != "" {
-			disp := Relative(Absolute(e.owner, apex), origin)
+			disp := displayOwner(e, apex, origin)
 			if !havePrev || !NameEqual(disp, prev) {
 				l.owner[i] = disp
 				l.ownerW = max(l.ownerW, min(len(disp), ownerColumnCap))
@@ -103,6 +103,21 @@ func plan(origin, apex string, entries []Entry) layout {
 		l.typeW = max(l.typeW, len(e.typ))
 	}
 	return l
+}
+
+// displayOwner returns the owner of e as written under origin: relative to
+// it where possible. Under the root origin a relative name and its absolute
+// form are the same name to this package, but not to a name server that
+// loads the file with the zone's origin, so there the spelling follows how
+// the owner was written: only an owner that was written relative loses its
+// trailing dot. An owner that was built rather than parsed stays absolute,
+// unless the zone has no known apex and its owners are bare names anyway.
+func displayOwner(e Entry, apex, origin string) string {
+	abs := Absolute(e.owner, apex)
+	if origin == "." && (e.form == formAbsolute || e.form == formUnknown && apex != ".") {
+		return abs
+	}
+	return Relative(abs, origin)
 }
 
 // prefix renders the owner, TTL, class and type columns of a record line,
@@ -129,10 +144,23 @@ func (l layout) prefix(i int, e Entry) string {
 // onward are re-quoted from the decoded value, everything else is verbatim.
 func fieldText(e Entry, i int) string {
 	f := e.fields[i]
-	if e.isText() || (e.typ == "CAA" && i >= 2) {
+	if e.isText() || (e.isType(typeCAA) && i >= 2 && !caaVerbatim(e)) {
 		return Quote(f.Value)
 	}
 	return f.Raw
+}
+
+// caaVerbatim reports whether a CAA record's value fields must be written
+// as they are, because the reference parser would read the re-quoted form
+// differently: an unquoted value holding a backslash is literal to it,
+// backslash included, and it takes several unquoted values but not several
+// quoted ones. Only a well-formed record (flag, tag, one value) without
+// such an escape is re-quoted.
+func caaVerbatim(e Entry) bool {
+	if len(e.fields) != 3 {
+		return true
+	}
+	return !e.fields[2].Quoted && strings.Contains(e.fields[2].Raw, "\\")
 }
 
 func joinComments(cs ...[]string) string {
@@ -166,7 +194,7 @@ func format(w io.Writer, origin, apex string, entries []Entry, bumpSerial bool) 
 		case Directive:
 			lw.line(directiveText(e))
 		case Record:
-			bump := bumpSerial && !bumped && e.typ == "SOA"
+			bump := bumpSerial && !bumped && e.isType(typeSOA)
 			if err := formatRecord(lw, l.prefix(i, e), e, bump); err != nil {
 				return err
 			}
@@ -182,7 +210,7 @@ func directiveText(e Entry) string {
 	for i, a := range e.args {
 		b.WriteByte(' ')
 		if e.name == "$ORIGIN" && i == 0 {
-			b.WriteString(Fqdn(a.Raw))
+			b.WriteString(Fqdn(nameText(a)))
 		} else {
 			b.WriteString(a.Raw)
 		}
@@ -192,10 +220,10 @@ func directiveText(e Entry) string {
 }
 
 func formatRecord(lw *lineWriter, prefix string, e Entry, bumpSerial bool) error {
-	if e.typ == "SOA" {
+	if e.isType(typeSOA) {
 		return formatSOA(lw, prefix, e, bumpSerial)
 	}
-	if keep, ok := longKeys[e.typ]; ok && len(e.fields) > keep {
+	if keep, ok := longKeys[e.rtype]; ok && !e.generic() && len(e.fields) > keep {
 		var data strings.Builder
 		for _, f := range e.fields[keep:] {
 			data.WriteString(f.Raw)

@@ -36,8 +36,26 @@ func (lw *lineWriter) line(s string) {
 	}
 	lw.pendingBlank = false
 	lw.wroteAny = true
-	lw.w.WriteString(strings.TrimRight(s, " \t")) //nolint:errcheck // see above
-	lw.w.WriteByte('\n')                          //nolint:errcheck // see above
+	lw.w.WriteString(trimBlanks(s)) //nolint:errcheck // see above
+	lw.w.WriteByte('\n')            //nolint:errcheck // see above
+}
+
+// trimBlanks removes trailing spaces and tabs from s, except a blank that
+// is escaped by a backslash: that one is field data ("a\ " is the two bytes
+// "a "), and dropping it would change the record.
+func trimBlanks(s string) string {
+	t := strings.TrimRight(s, " \t")
+	if len(t) == len(s) {
+		return s
+	}
+	n := 0
+	for n < len(t) && t[len(t)-1-n] == '\\' {
+		n++
+	}
+	if n%2 == 1 {
+		return s[:len(t)+1]
+	}
+	return t
 }
 
 func (lw *lineWriter) blank() { lw.pendingBlank = true }
@@ -182,7 +200,10 @@ func formatRecord(lw *lineWriter, prefix string, e Entry, bumpSerial bool) error
 		for _, f := range e.fields[keep:] {
 			data.WriteString(f.Raw)
 		}
-		if data.Len() > longKeyPiece {
+		// Key data is base64 or hex. Anything with an escape or a quote is
+		// not, and cutting it at a fixed offset could split "\DDD" or a
+		// quoted string, so such a record takes the generic layout.
+		if data.Len() > longKeyPiece && !strings.ContainsAny(data.String(), "\\\"") {
 			head := make([]string, keep)
 			for i := range keep {
 				head[i] = e.fields[i].Raw
@@ -207,7 +228,7 @@ func formatRecord(lw *lineWriter, prefix string, e Entry, bumpSerial bool) error
 		texts[i] = fieldText(e, i)
 	}
 	if !multi {
-		lw.line(strings.TrimRight(prefix+strings.Join(texts, " "), " ") + withSpace(joinComments(e.tail)))
+		lw.line(trimBlanks(prefix+strings.Join(texts, " ")) + withSpace(joinComments(e.tail)))
 		return nil
 	}
 	lw.line(prefix + "(" + withSpace(joinComments(e.head)))

@@ -221,7 +221,11 @@ and where behaviour was pinned down.
   user text. Only the first SOA in the entry list is bumped.
 - Long keys: the check runs before the generic multi-line decision, and all
   comments of such a record land on its first line. Exactly 55 bytes of
-  data stays on one line; 56 splits.
+  data stays on one line; 56 splits. Data containing a backslash or a
+  double quote is never split (a cut could land inside `\DDD` or a quoted
+  string); such a record takes the generic layout.
+- Trailing blanks: an escaped blank ending a line (`a\ `) is field data and
+  is kept; only the unescaped blanks after it are removed.
 - `Format` with no entries writes nothing (no final LF for an empty file).
 - Write errors: output goes through a `bufio.Writer`, whose first error
   sticks and is returned from `Flush`.

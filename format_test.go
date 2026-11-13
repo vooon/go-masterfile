@@ -260,6 +260,12 @@ b A 2
 a CH A 1
 b IN A 2
 `},
+		{"escaped trailing blank is field data, not a trailing blank",
+			"$ORIGIN e.\na IN KEY 0 0 0 b\\ \t \nb IN KEY 0 0 0 c\\\\ \nc IN KEY 0 0 0 d\\\\\\ ; c\nd IN KEY 0 0 0 e\\\t\n",
+			"$ORIGIN e.\na IN KEY 0 0 0 b\\ \nb IN KEY 0 0 0 c\\\\\nc IN KEY 0 0 0 d\\\\\\  ; c\nd IN KEY 0 0 0 e\\\t\n"},
+		{"long key data with an escape or a quote is not split",
+			"$ORIGIN e.\na IN DNSKEY 0 0 0 " + strings.Repeat("0", 50) + `\0\0\0` + "\nb IN DNSKEY 0 0 0 \"" + strings.Repeat("0", 60) + "\"\n",
+			"$ORIGIN e.\na IN DNSKEY 0 0 0 " + strings.Repeat("0", 50) + `\0\0\0` + "\nb IN DNSKEY 0 0 0 \"" + strings.Repeat("0", 60) + "\"\n"},
 		{"empty input",
 			"", ""},
 	} {

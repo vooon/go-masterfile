@@ -257,7 +257,9 @@ channels.
   absolute origin, the relative part; the origin itself gives `@`; a name not
   under the origin, or not absolute, is returned unchanged. The suffix must
   match on a label boundary: `myexample.com.` is not under `example.com.`, and
-  an escaped dot (`\.`) is not a boundary.
+  an escaped dot (`\.`) is not a boundary. A name whose relative part would
+  be the single label `@` is returned unchanged, since `@` alone means the
+  origin.
 - `Absolute(name, origin string) string`: section 4.1 rule.
 
 ### 6.3 Building records
@@ -313,7 +315,12 @@ Layout rules, all of which the examples in section 8 exercise:
    space, then the next column). A record whose displayed owner equals the
    previous record's displayed owner (4.2 comparison) gets a blank owner,
    unless a comment, blank line or directive entry came between them; then
-   the owner is written again.
+   the owner is written again. Where the origin in effect is the root (a
+   file parsed with no apex argument, before any `$ORIGIN`), relative and
+   absolute spellings name the same owner, and the one the file used is
+   kept: an owner written with a trailing dot keeps it, one written without
+   stays without. Records that were built rather than parsed are written
+   absolute there, unless the apex itself is only the root fallback.
 2. **TTL column.** Only records whose TTL is present and differs from the
    `$TTL` in force get a TTL; a TTL equal to it is redundant and dropped. If
    no record in the file keeps a TTL, there is no TTL column. Otherwise the
@@ -363,7 +370,8 @@ and formatting the file text (Reformat) produce identical bytes.
   first eight digits are a valid calendar date (`YYYYMMDD`); otherwise it is
   a **Unix time serial**. Non-numeric serials are written back unchanged.
 - `Increase(serial string) string`: a Unix time serial becomes
-  `max(now, serial+1)`; a date serial is incremented by one (no date logic:
+  `max(now, serial+1)`, with `4294967295 + 1` wrapping to `0` (RFC 1982), so
+  the result is always a 32-bit number; a date serial is incremented by one (no date logic:
   `2024123199` becomes `2024123200`). Two bumps within one second still
   increase.
 - The generated serial comment is `; serial  ` (two spaces) followed by a

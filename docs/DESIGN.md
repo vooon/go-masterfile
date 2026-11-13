@@ -44,7 +44,20 @@ and where behaviour was pinned down.
   in the type table; the class check wins, so `a IN ANY ...` is a "double
   class" error, which is right for zone files.
 - **Type names** are canonicalised to upper case; `TYPE<n>` keeps that
-  spelling even when *n* is a known type (equality compares the number).
+  spelling even when *n* is a known type. Every decision keys on the
+  number, never the spelling: equality, RRset grouping (`RRSets` names the
+  set `A` for records written `TYPE1`), content form and the layout rules
+  for SOA, TXT/SPF, CAA and long keys. The one exception is rdata in the
+  RFC 3597 generic form (first field `\#`), which is opaque whatever the
+  type and always takes the generic layout.
+- **`$ORIGIN` argument**: the origin in force is the argument in its
+  written (escaped) form, made absolute, because owners are kept in written
+  form too; using the decoded value would turn `a\.b.example.` into a
+  three-label name and let escaped blanks escape into the owner column. A
+  quoted argument is converted to an unquoted name (quotes dropped; blanks,
+  `;` and parentheses backslash-escaped) both for resolution and when the
+  directive is written, so `$ORIGIN "example.org"` formats to
+  `$ORIGIN example.org.` once and stays there.
 - **Trailing blank lines** are kept as one `Blank` entry by the parser; the
   formatter drops leading and trailing blanks and collapses runs. Parsing
   therefore loses nothing a human can see; writing normalises.
@@ -83,6 +96,21 @@ and where behaviour was pinned down.
   would remain (`..` stays, so repeated formatting cannot erode a name). `Parse` falls
   back to `.` when no apex is known, and this rule keeps origin-less files
   such as `www IN A ...` byte-stable instead of turning them into `www.`.
+- **Owner spelling under the root origin.** `www` and `www.` are the same
+  name to this package when the origin in force is the root, but not to a
+  name server that loads the file with the zone's origin. Each parsed
+  record therefore remembers whether its owner was written relative or
+  absolute (an inherited owner copies the one it repeats), and under the
+  root origin only an owner written relative loses its dot:
+  `www.example.org. IN A ...` in a file without `$ORIGIN` is written back
+  with the dot. Records built by `NewRecord`, `WithOwner` or an operation
+  have no written form: they are written absolute, unless the zone has no
+  known apex (the root fallback), where every owner is a bare name. Under
+  any other origin the form is irrelevant.
+- A name whose relative part would be the single label `@`
+  (`@.example.org.` in `example.org.`) stays absolute in `Relative`: a bare
+  `@` is the origin itself, and the relative form would make
+  `DeleteOwner("@.example.org.")` delete the apex.
 - `Absolute("@", "")` is `""`, but `Parse` never resolves against an empty
   origin: with the root fallback `@` stays `@`, and `Check` reports the
   missing origin to callers that need one.
@@ -179,6 +207,15 @@ and where behaviour was pinned down.
 - `Serial` reads the first SOA's third field; a non-numeric or overflowing
   serial reports false rather than 0.
 
+- **Relative names in client content** are not rewritten. A record's owner
+  is position-independent, its rdata is not: `CNAME a` inserted below a
+  `$ORIGIN sub.example.org.` line points at `a.sub.example.org.`. Making
+  that safe needs either per-type knowledge of which fields are names (a
+  non-goal) or bracketing every insertion with `$ORIGIN` lines, which would
+  churn files for the common case of address and text records. The
+  contract is instead that content carries absolute names, as the PowerDNS
+  form does; `RR.Content` and edit spec 2.4 say so.
+
 ## Zone routing and reverse names (edit spec section 4)
 
 - `InZone` and `Relative` share one label-boundary check (`underOrigin`),
@@ -216,6 +253,9 @@ and where behaviour was pinned down.
 - Multi-line generic records put `tail` comments on the last field's line;
   the closing `)` is always alone. The alignment width counts only fields
   that carry a comment.
+- Unix serials wrap: `Increase("4294967295")` is `max(now, 0)` (RFC 1982
+  serial arithmetic), never a 33-bit number that no parser accepts. A clock
+  beyond 32 bits is ignored.
 - SOA: comments after `(`, after MNAME and after RNAME are all joined on the
   first line. A non-numeric serial gets the bare comment `; serial` plus any
   user text. Only the first SOA in the entry list is bumped.
@@ -236,6 +276,10 @@ and where behaviour was pinned down.
   because miekg/dns cannot resolve relative names against an empty origin.
   Records without a TTL and without `$TTL` get TTL 0 from miekg/dns; both
   sides see the same, so it does not matter for the comparison.
+- `Commit` verifies against the origin the text is rendered with (the
+  caller's hint, or the root), not the apex found: with no hint the two
+  differ, and reading both texts under the apex would hide a name that was
+  written relative to the wrong origin.
 - A user comment is "found" in the formatted text when it is a substring of
   any comment there, because the serial comment is regenerated around it.
 - **Known reference-parser quirk** (miekg/dns v1.1.73, `scan.go`): when a
@@ -246,6 +290,19 @@ and where behaviour was pinned down.
   PublicKey"). BIND accepts the same text. Such a formatted file fails
   `Verify` and the write is refused, which is the safe outcome; the fuzz
   target skips this shape. The fix belongs upstream.
+- **CAA values** are re-quoted only in a well-formed record (flag, tag, one
+  value). The reference parser reads an unquoted value containing a
+  backslash (`\.`) literally, backslash included, while this package
+  decodes it, and it accepts several unquoted values after the tag but not
+  several quoted ones. Re-quoting either shape would give `Verify` a
+  different or unparsable record, so those are written verbatim
+  (fuzz-found).
+- **Second quirk**, same parser: a long run of `;` (a few hundred) in a
+  comment inside parentheses is rejected ("comment length insufficient for
+  parsing") once the group holds enough comment text; ordinary long
+  comments are fine. The labels `Format` adds to an SOA can tip a file that
+  parsed before over that edge. `Verify` refuses the write, the safe
+  outcome, and the fuzz target skips the shape.
 
 ## Command
 

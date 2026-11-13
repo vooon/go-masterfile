@@ -3,6 +3,7 @@
 package masterfile
 
 import (
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -44,18 +45,20 @@ func classifySerial(s string) (serialKind, uint32) {
 }
 
 // Increase returns the serial to write after a change: a Unix time serial
-// becomes max(now, serial+1); a date serial is incremented by one with no
+// becomes max(now, serial+1), where 4294967295+1 wraps to 0 as serial
+// arithmetic does (RFC 1982), so the result is always a 32-bit number; a
+// date serial is incremented by one with no
 // date logic ("2024123199" becomes "2024123200"). Anything else is returned
 // unchanged. Two bumps within one second still increase.
 func Increase(serial string) string {
 	kind, n := classifySerial(serial)
 	switch kind {
 	case serialUnix:
-		next := uint64(n) + 1
-		if t := now().Unix(); t > 0 && uint64(t) > next {
-			next = uint64(t)
+		next := n + 1 // wraps to 0 after 4294967295 (RFC 1982)
+		if t := now().Unix(); t > int64(next) && t <= math.MaxUint32 {
+			next = uint32(t)
 		}
-		return strconv.FormatUint(next, 10)
+		return strconv.FormatUint(uint64(next), 10)
 	case serialDate:
 		return strconv.FormatUint(uint64(n)+1, 10)
 	}

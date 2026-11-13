@@ -193,7 +193,10 @@ func buildRecord(toks []token) (Entry, error) {
 	e := Entry{kind: Record, line: first.line}
 	i := 0
 	if first.kind == tokItem && first.col == 1 {
-		e.owner = first.raw
+		e.owner, e.form = first.raw, formRelative
+		if isAbsolute(first.raw) {
+			e.form = formAbsolute
+		}
 		i = 1
 	}
 	var head []string

@@ -122,7 +122,12 @@ other fields joined by one space. A content string given by a client is
 normalised the same way: for TXT/SPF it is taken as is; for other types it
 is tokenised like rdata and its decoded fields joined by one space (so
 quoting and spacing do not matter; a string that does not tokenise only has
-its whitespace runs collapsed). All value matching
+its whitespace runs collapsed). The content of a new record is written into
+the file as given: the package does not know which rdata fields are names
+(core non-goal: per-type RDATA validation), so a relative name in it is
+read against the `$ORIGIN` in force where the record lands, not against the
+apex. Clients send absolute names (`mx.example.org.`), as the PowerDNS
+content form requires. All value matching
 in this package compares contents, nowhere raw fields. (zoneomatic currently
 matches PTR targets and ACME tokens byte for byte and other values by
 content; this unifies them.)
@@ -163,7 +168,7 @@ first anchor that matches any Record entry decides: new records are
 inserted right after the **last** matching entry and after the records
 that follow it with the same owner, so an owner's block (an A/AAAA pair) is
 never split. If no anchor matches, or `Placement` is empty, new records are
-appended at the end. Only Record entries count; a comment or blank line
+appended at the end, before any blank line the file ends with. Only Record entries count; a comment or blank line
 after the last matching record stays below the inserted records.
 
 Example from zoneomatic: ACME records use
@@ -268,7 +273,9 @@ Edits one RRset in place, as DNS UPDATE does (RFC 2136):
    last remaining entry of the set; if the set is now empty, per
    `Placement`.
 
-Adding a present value and removing an absent one are no-ops. `Add` is
+Comments of the entries dropped in step 1 are carried (2.7) onto the first
+record inserted in step 3. Adding a present value and removing an absent one
+are no-ops. `Add` is
 processed after `Remove`, so a value both removed and added ends up present
 once, at the position rule of step 3.
 
@@ -310,7 +317,8 @@ type Insert struct {
 ```
 
 Adds the records the zone does not already hold (same owner, type and
-content; those it holds count as `Matched`) where a human would put them
+content; those it holds count as `Matched`, and a record repeating an
+earlier one of `Records` is skipped) where a human would put them
 (2.6). Nothing else is touched; no records is a no-op.
 
 ### 3.7 Queries
@@ -330,8 +338,8 @@ type RRSet struct {
 }
 ```
 
-`RRSets` groups Record entries by (owner, type) in order of first
-appearance, with the `$TTL` in force applied for records without an explicit
+`RRSets` groups Record entries by (owner, numeric type) in order of first
+appearance (a record written `TYPE1` belongs to the `A` set), with the `$TTL` in force applied for records without an explicit
 TTL. `Serial` parses the SOA's third field.
 
 ## 4. Routing and reverse-zone helpers

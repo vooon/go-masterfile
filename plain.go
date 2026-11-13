@@ -19,8 +19,8 @@ func writePlain(w io.Writer, origin, apex string, entries []Entry) error {
 		case Comment:
 			writeLine(bw, e.comment)
 		case Directive:
-			if e.name == "$ORIGIN" && len(e.args) > 0 {
-				origin = Fqdn(e.args[0].Value)
+			if o, ok := originName(e); ok {
+				origin = o
 			}
 			writeLine(bw, directiveText(e))
 		case Record:
@@ -38,7 +38,7 @@ func writeLine(w *bufio.Writer, s string) {
 func plainRecord(w *bufio.Writer, origin, apex string, e Entry) {
 	var b strings.Builder
 	if e.owner != "" {
-		b.WriteString(Relative(Absolute(e.owner, apex), origin))
+		b.WriteString(displayOwner(e, apex, origin))
 	}
 	if e.hasTTL {
 		b.WriteString(" " + e.ttl.Raw)

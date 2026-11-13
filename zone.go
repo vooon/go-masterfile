@@ -83,7 +83,7 @@ func (z *Zone) Records() iter.Seq2[int, Entry] {
 // SOA returns the first SOA record and true, or false when there is none.
 func (z *Zone) SOA() (Entry, bool) {
 	for _, e := range z.Records() {
-		if e.typ == "SOA" {
+		if e.rtype == typeSOA {
 			return e, true
 		}
 	}
@@ -94,7 +94,7 @@ func (z *Zone) SOA() (Entry, bool) {
 // is no SOA or the serial is not a 32-bit number.
 func (z *Zone) Serial() (uint32, bool) {
 	soa, ok := z.SOA()
-	if !ok || len(soa.fields) < 3 {
+	if !ok || soa.generic() || len(soa.fields) < 3 {
 		return 0, false
 	}
 	n, err := strconv.ParseUint(soa.fields[2].Value, 10, 32)
@@ -158,7 +158,9 @@ func (z *Zone) Commit(bumpSerial bool) (data []byte, changed bool, err error) {
 	if err := z.Format(&formatted, bumpSerial); err != nil {
 		return nil, false, err
 	}
-	if err := Verify(z.apex, plain.Bytes(), formatted.Bytes()); err != nil {
+	// Both texts are rendered against the origin in force at the top of the
+	// file, so that is the origin the reference parser must read them with.
+	if err := Verify(z.origin, plain.Bytes(), formatted.Bytes()); err != nil {
 		return nil, false, err
 	}
 	return formatted.Bytes(), true, nil

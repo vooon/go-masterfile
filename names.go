@@ -83,7 +83,9 @@ func mapASCII(s string, lo, hi byte, delta int) string {
 // returned unchanged. The origin must match on a label boundary: an escaped
 // dot is not a boundary, and "myexample.org." is not under "example.org.".
 // Under the root origin "." an absolute name loses its trailing dot, unless
-// that would leave another one (".." stays as it is).
+// that would leave another one (".." stays as it is). A name whose relative
+// part would be the single label "@" also stays absolute, because a bare
+// "@" means the origin itself.
 func Relative(name, origin string) string {
 	if name == "@" || origin == "" || !isAbsolute(name) {
 		return name
@@ -93,15 +95,15 @@ func Relative(name, origin string) string {
 		if name == "." {
 			return "@"
 		}
-		if r := name[:len(name)-1]; !isAbsolute(r) {
+		if r := name[:len(name)-1]; !isAbsolute(r) && r != "@" {
 			return r
 		}
-		return name // "..": stripping would change the name's meaning
+		return name // "..", "@.": stripping would change the name's meaning
 	}
 	if NameEqual(name, origin) {
 		return "@"
 	}
-	if rel, ok := underOrigin(name, origin); ok {
+	if rel, ok := underOrigin(name, origin); ok && rel != "@" {
 		return rel
 	}
 	return name

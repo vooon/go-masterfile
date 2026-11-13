@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.3.0](https://github.com/vooon/go-masterfile/compare/v0.2.2...v0.3.0) (2026-11-13)
+
+
+### Features
+
+* fix the findings of the full library review ([88bbdee](https://github.com/vooon/go-masterfile/commit/88bbdeec24eb3c59df61296234f1b1a4a27cf655))
+* fix the findings of the full library review ([d1f8762](https://github.com/vooon/go-masterfile/commit/d1f87620bba389db7f9fa4eee6a1ca976e7fb96d))
+
+
+### Bug Fixes
+
+* **format:** keep escaped trailing blanks and never split escaped key data ([995315a](https://github.com/vooon/go-masterfile/commit/995315ac6f0bdb8ffcf007de4f93becd180b5ec5))
+* **format:** keep escaped trailing blanks and never split escaped key data ([6f0891d](https://github.com/vooon/go-masterfile/commit/6f0891dc083c35eb2c7f60ce139d29e67d4bf9ab))
+
 ## [0.2.2](https://github.com/vooon/go-masterfile/compare/v0.2.1...v0.2.2) (2026-10-28)
 
 
